@@ -1,0 +1,18 @@
+[workspace]
+members = [
+  "crates/mpc-core",
+  "crates/mpc-frost-ed25519",
+  "crates/mpc-security",
+  "crates/mpc-runtime",
+  "adapters/holochain-0.7",
+  "dnas/mpc/zomes/integrity/mpc_integrity",
+  "dnas/mpc/zomes/coordinator/mpc",
+]
+default-members = ["crates/mpc-core"]
+resolver = "2"
+
+[workspace.dependencies]
+hdi = "=0.8.1"
+hdk = "=0.7.1"
+serde = { version = "1.0", features = ["derive"] }
+holochain_serialized_bytes = "*"

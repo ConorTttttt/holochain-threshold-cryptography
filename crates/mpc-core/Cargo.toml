@@ -1,0 +1,10 @@
+[package]
+name = "holochain-mpc-core"
+version = "0.3.3"
+edition = "2021"
+license = "Apache-2.0"
+description = "Protocol-neutral session and envelope validation primitives for Holochain-oriented MPC applications"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"

@@ -1,0 +1,15 @@
+[package]
+name = "holochain-mpc-security"
+version = "0.3.3"
+edition = "2021"
+license = "Apache-2.0"
+description = "Reusable authenticated echo-broadcast gate and sealed peer messages for Holochain MPC"
+
+[dependencies]
+holochain-mpc-core = { path = "../mpc-core" }
+serde = { workspace = true }
+serde_json = "1.0"
+crypto_box = { version = "=0.9.1", features = ["salsa20"] }
+
+[dev-dependencies]
+serde_json = "1.0"

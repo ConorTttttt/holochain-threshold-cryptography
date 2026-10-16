@@ -1,0 +1,17 @@
+manifest_version: '0'
+name: mpc
+integrity:
+  network_seed: null
+  properties: null
+  zomes:
+  - name: mpc_integrity
+    hash: null
+    path: ../../../target/wasm32-unknown-unknown/release/mpc_integrity.wasm
+    dependencies: null
+coordinator:
+  zomes:
+  - name: mpc
+    hash: null
+    path: ../../../target/wasm32-unknown-unknown/release/mpc.wasm
+    dependencies:
+    - name: mpc_integrity

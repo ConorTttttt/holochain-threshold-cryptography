@@ -1,0 +1,13 @@
+[package]
+name = "holochain-mpc-adapter"
+version = "0.3.3"
+edition = "2021"
+license = "Apache-2.0"
+description = "HDK 0.7 call provenance boundary for holochain-mpc-core"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+hdk = "=0.7.1"
+holochain-mpc-core = { path = "../../crates/mpc-core" }
