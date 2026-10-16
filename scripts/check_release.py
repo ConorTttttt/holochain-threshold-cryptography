@@ -30,7 +30,7 @@ expected = {'holochain-mpc-core', 'holochain-mpc-frost-ed25519',
 if set(packages) != expected:
     errors.append(f'wrong package inventory: {packages}')
 package = json.loads((ROOT / 'package.json').read_text())
-if package['version'] != '0.3.5':
+if package['version'] != '0.3.8':
     errors.append('package version mismatch')
 for yml in ['workdir/happ.yaml', 'dnas/mpc/workdir/dna.yaml']:
     d = yaml.safe_load((ROOT / yml).read_text())
@@ -56,7 +56,18 @@ for file in ['crates/mpc-frost-ed25519/src/lib.rs',
              'crates/mpc-dkg-worker/src/lib.rs',
              'crates/mpc-dkg-worker/src/main.rs',
              'crates/mpc-dkg-worker/tests/three_processes.rs',
-             'docs/V035_PROCESS_ISOLATED_DKG.md']:
+             'docs/V035_PROCESS_ISOLATED_DKG.md',
+             'crates/mpc-dkg-worker/src/ipc.rs',
+             'crates/mpc-dkg-worker/tests/ipc_process.rs',
+             'docs/V036_AUTHENTICATED_NODE_IPC.md',
+             'crates/mpc-runtime/src/dkg.rs',
+             'crates/mpc-runtime/tests/dkg_journal.rs',
+             'crates/mpc-dkg-worker/tests/dkg_restart.rs',
+             'docs/V037_DKG_CRASH_SAFETY.md',
+             'crates/mpc-dkg-worker/src/node_service.rs',
+             'crates/mpc-dkg-worker/src/node_main.rs',
+             'crates/mpc-dkg-worker/tests/node_service.rs',
+             'docs/V038_INDEPENDENT_NODE_SERVICE.md']:
     if not (ROOT / file).is_file():
         errors.append(f'missing file: {file}')
 if errors:

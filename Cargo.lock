@@ -1696,6 +1696,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
  "crypto-common 0.1.7",
+ "subtle",
 ]
 
 [[package]]
@@ -2616,7 +2617,16 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
 dependencies = [
- "hmac",
+ "hmac 0.13.0",
+]
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -2759,17 +2769,25 @@ dependencies = [
 
 [[package]]
 name = "holochain-mpc-dkg-worker"
-version = "0.3.5"
+version = "0.3.8"
 dependencies = [
  "hdk",
+ "hmac 0.12.1",
  "holochain",
  "holochain-mpc-core",
  "holochain-mpc-frost-ed25519",
+ "holochain-mpc-runtime",
  "holochain-mpc-security",
+ "libc",
  "mpc",
+ "rand 0.8.8",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -2788,11 +2806,12 @@ dependencies = [
 
 [[package]]
 name = "holochain-mpc-runtime"
-version = "0.3.4"
+version = "0.3.7"
 dependencies = [
  "chacha20poly1305",
  "holochain-mpc-core",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "zeroize",
@@ -5610,7 +5629,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112d82ceb8c5bf524d9af484d4e4970c9fd5a0cc15ba14ad93dccd28873b0629"
 dependencies = [
  "digest 0.11.3",
- "hmac",
+ "hmac 0.13.0",
 ]
 
 [[package]]
@@ -7535,7 +7554,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hkdf",
- "hmac",
+ "hmac 0.13.0",
  "itoa",
  "log",
  "md-5",
@@ -9550,7 +9569,7 @@ dependencies = [
  "deflate64",
  "flate2",
  "getrandom 0.4.3",
- "hmac",
+ "hmac 0.13.0",
  "indexmap 2.14.2",
  "lzma-rust2",
  "memchr",

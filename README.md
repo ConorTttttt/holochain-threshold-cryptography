@@ -1,11 +1,34 @@
+# v0.3.8 Candidate — Independently launchable local MPC node services
+
+Adds `mpc-node`, a one-ceremony Unix-socket DKG service with a private state directory, independently provisioned local HMAC and encrypted-journal keys, pinned Holochain agent/proposal/session context, and process-isolation tests. **This is a local node-service foundation, NOT a conductor-connected multi-machine product**; the trusted Holochain WebSocket bridge and completed-group key persistence remain to be built. See [v0.3.8 design](docs/V038_INDEPENDENT_NODE_SERVICE.md).
+
+**Verification:** The v0.3.7 predecessor passed 56 native and Holochain tests in the user’s Holonix shell. The v0.3.8 changes pass static manifest/source checks here; Rust compilation and new tests remain unverified pending Holonix.
+
+# v0.3.7 Candidate — Encrypted DKG journal and fail-closed restart
+
+The three-process test now opts into per-worker encrypted SQLite journals.
+Each DKG admission and accepted public/ciphertext reply is durably recorded
+before release. A restarted worker cannot reuse the same proposal/agent pair;
+it requires a **fresh proposal with fresh FROST randomness**. Private FROST
+secret packages are deliberately NOT serialized for recovery. See
+[the v0.3.7 design](docs/V037_DKG_CRASH_SAFETY.md).
+
+**Status:** Uncompiled source candidate. The previous v0.3.6 suite passed
+50 tests on the user's Holonix machine. No OS keystore master-key provision,
+rollback-resistant storage or durable final group key exists yet.
+
+# v0.3.6 Candidate: Authenticated local worker IPC
+
+Test-only HMAC-authenticated, ceremony-bound, replay-resistant local IPC for the three-worker/three-conductor DKG test. Bootstrap secret is provisioned via a private stdio pipe and the harness still supplies Holochain provenance; **not a production authenticated conductor bridge**. See `docs/V036_AUTHENTICATED_NODE_IPC.md`. Run `npm run test:ipc` and `npm run test:dkg-process`.
+
 
 ## v0.3.5 — Process-isolated DKG (experimental)
 
 `npm run test:dkg-process` launches three separate native `mpc-dkg-worker` child processes,
 one per Holochain conductor. Each retains its own FROST secret/key and exchanges
 public DKG envelopes and encrypted Round-2 ciphertext via its conductor.
-This uses a **test-only unauthenticated stdio parent/child IPC**; there is no
-restart recovery or OS-keystore binding. See `docs/V035_PROCESS_ISOLATED_DKG.md`.
+The original unauthenticated stdio IPC was replaced with test-only
+authenticated IPC in v0.3.6. OS-keystore binding is still missing. See `docs/V035_PROCESS_ISOLATED_DKG.md`.
 
 # Holochain MPC Core — v0.3.4 live-DKG integration test (experimental source)
 

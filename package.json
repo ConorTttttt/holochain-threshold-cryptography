@@ -1,6 +1,6 @@
 {
   "name": "holochain-mpc-core-dev",
-  "version": "0.3.5",
+  "version": "0.3.8",
   "private": true,
   "scripts": {
     "build:zomes": "RUSTFLAGS='--cfg getrandom_backend=\"custom\"' cargo build --release --target wasm32-unknown-unknown -p mpc_integrity -p mpc",
@@ -12,10 +12,16 @@
     "test:policy": "cargo test -p holochain-mpc-security --test group_activation -- --nocapture",
     "test:security": "cargo test -p holochain-mpc-security --test security_protocol -- --nocapture",
     "test:frost": "cargo test -p holochain-mpc-frost-ed25519 --test three_agents -- --nocapture",
-    "test:native": "npm run test:core && npm run test:security && npm run test:policy && npm run test:runtime && npm run test:frost && npm run test:worker-unit",
+    "test:native": "npm run test:core && npm run test:security && npm run test:policy && npm run test:runtime && npm run test:frost && npm run test:worker-unit && npm run test:ipc-process && npm run test:dkg-durable && npm run test:worker-restart && npm run test:node-service",
     "check:holochain-versions": "python3 scripts/check_holochain_versions.py",
     "test:dkg-live": "npm run build:happ && cargo test -p mpc --test dkg_live -- --nocapture",
     "test:dkg-process": "npm run build:happ && cargo test -p holochain-mpc-dkg-worker --test three_processes -- --nocapture",
-    "test:worker-unit": "cargo test -p holochain-mpc-dkg-worker --lib -- --nocapture"
+    "test:worker-unit": "cargo test -p holochain-mpc-dkg-worker --lib -- --nocapture",
+    "test:ipc": "cargo test -p holochain-mpc-dkg-worker --lib ipc::tests -- --nocapture",
+    "test:ipc-process": "cargo test -p holochain-mpc-dkg-worker --test ipc_process -- --nocapture",
+    "test:dkg-durable": "cargo test -p holochain-mpc-runtime --test dkg_journal -- --nocapture",
+    "test:worker-restart": "cargo test -p holochain-mpc-dkg-worker --test dkg_restart -- --nocapture",
+    "test:node": "cargo test -p holochain-mpc-dkg-worker --lib node_service::tests -- --nocapture",
+    "test:node-service": "cargo test -p holochain-mpc-dkg-worker --test node_service -- --nocapture"
   }
 }

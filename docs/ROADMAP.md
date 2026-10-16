@@ -55,3 +55,12 @@ from this authoring environment. It must not be called an operational release.
 - [ ] Provision protected OS/Lair master keys, install anti-rollback controls and reliable backups/restore.
 - [ ] Portable signed broadcast evidence, full key-possession challenges, adversarial partitions and process-kill testing.
 - [ ] Independent audit before use with real-value assets or long-term cryptographic identities.
+
+## v0.3.8 — Independently launchable local service (candidate)
+- [x] Standalone `mpc-node` executable for independently provisioned per-ceremony controller processes, with 0700 private directories and 0600 key and socket access.
+- [x] Reuse authenticated HMAC IPC and encrypted, non-resumable DKG journal; fail closed on wrong key, replay and used proposal.
+- [x] Add source tests for independent local services, key isolation and permanent restart refusal.
+- [ ] Compile and execute the new native process tests on Holonix.
+- [ ] Implement conductor-backed bridge that verifies app WebSocket authentication, Holochain action authorship and signed inbox origin before forwarding to worker.
+- [ ] Integrate secure OS/Lair-backed key provisioning, durable completed FROST key packages and global anti-rollback.
+- [ ] Verify three real machine/VM deployments and isolated 2-of-3 signing.

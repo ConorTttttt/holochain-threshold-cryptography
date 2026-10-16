@@ -15,6 +15,7 @@ use holochain_mpc_core::{commitment, Envelope, SessionSpec};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::{fmt, path::Path};
 use zeroize::{Zeroize, Zeroizing};
+pub mod dkg;
 
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -59,6 +60,7 @@ pub enum Received { Inserted, Duplicate }
 /// authenticated sender assertion.
 impl RuntimeStore {
     pub fn open(path: &Path, key: MasterKey) -> RResult<Self> {
+        if key.0.iter().all(|b| *b == 0) { return Err(RuntimeError::Wire("unprovisioned zero master key")); }
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -87,6 +89,12 @@ impl RuntimeStore {
               deadline_ms INTEGER NOT NULL, state TEXT NOT NULL,
               reason TEXT,
               PRIMARY KEY (proposal, operation)
+            );
+            CREATE TABLE IF NOT EXISTS dkg_checkpoints (
+              proposal BLOB NOT NULL, owner BLOB NOT NULL, session BLOB NOT NULL,
+              state TEXT NOT NULL, revision INTEGER NOT NULL,
+              nonce BLOB NOT NULL, ciphertext BLOB NOT NULL,
+              PRIMARY KEY(proposal, owner)
             );
             CREATE TABLE IF NOT EXISTS activations (
               proposal BLOB NOT NULL, epoch INTEGER NOT NULL,

@@ -1,4 +1,4 @@
-//! EXPERIMENTAL v0.3.5 process-isolated DKG controller.
+//! EXPERIMENTAL v0.3.7 process-isolated, optional durable DKG controller.
 //!
 //! All secret FROST packages and X25519 private keys remain inside the child
 //! process. The host exchanges only PUBLIC envelopes, authenticated ciphertext
@@ -12,12 +12,19 @@
 //! there is NO key recovery, live signing, OS secret provisioning or rollback
 //! protection in this release. Never use it with valuable keys.
 use std::collections::{BTreeMap, BTreeSet};
+pub mod ipc;
+#[cfg(unix)]
+pub mod node_service;
+use ipc::{AuthChannel, AuthFrame, ChannelContext, Role};
 use holochain_mpc_core::Envelope;
 use holochain_mpc_frost_ed25519 as frost;
 use holochain_mpc_security::{BroadcastMessage, Ceremony, EchoBroadcast, VerifiedTranscript};
 use holochain_mpc_security::activation::GroupDescriptor;
 use holochain_mpc_security::sealed::NativeChannelKey;
 use serde::{Deserialize, Serialize};
+use holochain_mpc_runtime::{MasterKey, RuntimeStore};
+use holochain_mpc_core::commitment;
+use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag="op", rename_all="snake_case", deny_unknown_fields)]
@@ -228,6 +235,96 @@ impl Controller {
     }
 }
 
+
+/// MAC-authenticated command gate. A failed authentication, sequence, binding,
+/// or DKG check irrevocably aborts this worker instance.
+///
+/// This gate trusts bootstrap key provisioning and the local Holochain bridge's
+/// authenticated_sender assertions; neither is verified independently here.
+pub struct AuthenticatedController {
+    gate: AuthChannel,
+    context: ChannelContext,
+    inner: Controller,
+    dead: bool,
+    initialized: bool,
+    durable: Option<RuntimeStore>,
+}
+impl AuthenticatedController {
+    pub fn new(secret: [u8; 32], context: ChannelContext) -> Result<Self, String> {
+        let gate = AuthChannel::new(secret, context.clone(), Role::Worker)?;
+        Ok(Self { gate, context, inner: Controller::default(), dead: false, initialized: false, durable: None })
+    }
+    /// A non-resumable, encrypted, SQLite-backed DKG. An existing checkpoint
+    /// (even completed/aborted) blocks re-entry for the SAME proposal/agent.
+    /// The state encryption key must come from a trusted external provisioner.
+    pub fn new_durable(secret: [u8; 32], context: ChannelContext,
+                       db_path: &Path, master_key: MasterKey) -> Result<Self, String> {
+        let mut controller = Self::new(secret, context)?;
+        let store = RuntimeStore::open(db_path, master_key).map_err(|e| e.to_string())?;
+        if store.dkg_checkpoint(&controller.context.proposal_action,
+                                &controller.context.worker_agent,
+                                &controller.context.session_id)
+            .map_err(|e| e.to_string())?.is_some() {
+            return Err("existing DKG checkpoint; unsafe to restart; create a fresh proposal".into());
+        }
+        controller.durable = Some(store);
+        Ok(controller)
+    }
+
+    pub fn handle(&mut self, frame: AuthFrame<Command>) -> Result<AuthFrame<Reply>, String> {
+        if self.dead { return Err("authenticated controller is aborted".into()); }
+        let result = self.try_handle(frame);
+        if result.is_err() {
+            self.dead = true;
+            self.inner.poisoned = true;
+            self.inner.active = None;
+            // The live process is already dead-on-error. If the database fails,
+            // refuse further replies; its existing running marker still blocks
+            // recovery, so a crash cannot silently restart the old ceremony.
+            if let Some(store) = self.durable.as_mut() {
+                store.dkg_abort(&self.context.proposal_action, &self.context.worker_agent,
+                    &self.context.session_id)
+                    .map_err(|e| format!("cannot durably abort DKG: {e}"))?;
+            }
+        }
+        result
+    }
+    fn try_handle(&mut self, frame: AuthFrame<Command>) -> Result<AuthFrame<Reply>, String> {
+        let command = self.gate.open(frame)?;
+        if let Command::Init { binding, local } = &command {
+            if self.initialized || local != &self.context.worker_agent ||
+               binding.proposal_action != self.context.proposal_action ||
+               binding.spec.session_id != self.context.session_id {
+                return Err("initial ceremony identity is not authorised by channel context".into());
+            }
+        } else if !self.initialized {
+            return Err("authenticated Init required first".into());
+        }
+        let is_init = matches!(&command, Command::Init { .. });
+        if is_init {
+            // Persist the admission marker BEFORE FROST generates any secrets
+            // or public announcements can be released.
+            if let Some(store) = self.durable.as_mut() {
+                store.dkg_begin(&self.context.proposal_action, &self.context.worker_agent,
+                    &self.context.session_id).map_err(|e| e.to_string())?;
+            }
+        }
+        let reply = self.inner.handle(command)?;
+        if let Some(store) = self.durable.as_mut() {
+            // Persist encrypted metadata and the digest of the *public*
+            // response before any authenticated IPC output becomes visible.
+            let bytes = serde_json::to_vec(&reply).map_err(|e| e.to_string())?;
+            let digest = commitment("dkg-ipc-public-reply-v1", &bytes);
+            let completed = matches!(&reply, Reply::Completed { .. });
+            store.dkg_record_reply(&self.context.proposal_action,
+                &self.context.worker_agent, &self.context.session_id,
+                digest, completed).map_err(|e| e.to_string())?;
+        }
+        if is_init { self.initialized = true; }
+        self.gate.seal(reply)
+    }
+}
+
 fn to_peers(broadcast: &EchoBroadcast, binding: &frost::Binding, local: &[u8],
             sequence: u64, message: &BroadcastMessage) -> Result<Vec<Envelope>, String> {
     binding.spec.participants.iter().filter(|p| p.as_slice() != local)
@@ -254,6 +351,33 @@ mod tests {
         frost::Binding::new(vec![9;39], spec).unwrap()
     }
 
+    #[test]
+    fn authenticated_controller_rejects_wrong_agent_and_does_not_resume() {
+        let binding = binding();
+        let ctx = ipc::ChannelContext { worker_agent: binding.spec.participants[0].clone(),
+            proposal_action: binding.proposal_action.clone(), session_id: binding.spec.session_id,
+            channel_id: [7; 32] };
+        let mut host = ipc::AuthChannel::new([8;32], ctx.clone(), ipc::Role::Host).unwrap();
+        let mut worker = AuthenticatedController::new([8;32], ctx).unwrap();
+        let bad = host.seal(Command::Init { binding: binding.clone(),
+            local: binding.spec.participants[1].clone() }).unwrap();
+        assert!(worker.handle(bad).is_err());
+        let good = host.seal(Command::Init { binding: binding.clone(),
+            local: binding.spec.participants[0].clone() }).unwrap();
+        assert!(worker.handle(good).is_err());
+    }
+    #[test]
+    fn authenticated_controller_rejects_forgery_before_crypto_state_change() {
+        let binding = binding();
+        let ctx = ipc::ChannelContext { worker_agent: binding.spec.participants[0].clone(),
+            proposal_action: binding.proposal_action.clone(), session_id: binding.spec.session_id,
+            channel_id: [7;32] };
+        let mut fake = ipc::AuthChannel::new([9;32], ctx.clone(), ipc::Role::Host).unwrap();
+        let mut worker = AuthenticatedController::new([8;32], ctx).unwrap();
+        assert!(worker.handle(fake.seal(Command::Init { binding: binding.clone(),
+            local: binding.spec.participants[0].clone() }).unwrap()).is_err());
+        assert!(worker.handle(fake.seal(Command::Attest).unwrap()).is_err());
+    }
     #[test]
     fn incomplete_broadcast_fails_closed_and_stays_poisoned() {
         let binding = binding();

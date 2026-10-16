@@ -1,4 +1,4 @@
-//! v0.3.5: three OS processes own FROST secrets while Holochain conductors
+//! v0.3.6: three OS processes own FROST secrets while Holochain conductors
 //! authenticate and store EVERY peer-to-peer DKG envelope. No plaintext shares
 //! or KeyPackages travel through test process / worker IPC.
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -9,6 +9,9 @@ use hdk::prelude::*;
 use holochain::sweettest::*;
 use holochain_mpc_core::{commitment, Envelope, SessionSpec};
 use holochain_mpc_dkg_worker::{Command, PeerKeyBinding, Reply};
+use holochain_mpc_dkg_worker::ipc::{AuthChannel, AuthFrame, ChannelContext, Role, TestBootstrap, TestPersistence};
+use rand::{rngs::OsRng, RngCore};
+use zeroize::Zeroize;
 use holochain_mpc_frost_ed25519 as frost;
 use holochain_mpc_security::activation::GroupActivation;
 use mpc::{DeliveryReceipt, EncryptionKeyRecord, GroupAttestationRecord, PreparedGrant,
@@ -20,29 +23,46 @@ struct Worker {
     process: Child,
     input: BufWriter<ChildStdin>,
     output: BufReader<ChildStdout>,
+    auth: AuthChannel,
 }
 impl Worker {
-    fn start() -> TestResult<Self> {
+    fn start(context: ChannelContext, database_path: &Path) -> TestResult<Self> {
+        // Test-only symmetric-key provisioning through inherited private pipes.
+        // An attacker who can read the bootstrap pipe or control this test
+        // harness can impersonate the bridge; not production authenticated IPC.
+        let mut secret = [0_u8; 32];
+        OsRng.fill_bytes(&mut secret);
+        let auth = AuthChannel::new(secret, context.clone(), Role::Host)?;
         // Cargo sets CARGO_BIN_EXE_* for integration tests of this package.
         let mut process = ProcessCommand::new(env!("CARGO_BIN_EXE_mpc-dkg-worker"))
-            .arg("--unsafe-test-stdio")
+            .arg("--test-authenticated-stdio")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit())
             .spawn()?;
-        let input = BufWriter::new(process.stdin.take().ok_or("worker stdin unavailable")?);
+        let mut input = BufWriter::new(process.stdin.take().ok_or("worker stdin unavailable")?);
         let output = BufReader::new(process.stdout.take().ok_or("worker stdout unavailable")?);
-        Ok(Self { process, input, output })
+        let mut master_key = [0_u8; 32];
+        OsRng.fill_bytes(&mut master_key);
+        serde_json::to_writer(&mut input, &TestBootstrap { context, secret,
+            persistence: Some(TestPersistence { database_path: database_path.to_path_buf(), master_key }) })?;
+        master_key.zeroize();
+        input.write_all(b"\n")?;
+        input.flush()?;
+        secret.zeroize();
+        Ok(Self { process, input, output, auth })
     }
     fn call(&mut self, request: Command) -> TestResult<Reply> {
-        serde_json::to_writer(&mut self.input, &request)?;
+        let frame = self.auth.seal(request)?;
+        serde_json::to_writer(&mut self.input, &frame)?;
         self.input.write_all(b"\n")?;
         self.input.flush()?;
         let mut line = String::new();
         if self.output.read_line(&mut line)? == 0 || line.len() > 512 * 1024 {
             return Err("worker died or sent oversized reply".into());
         }
-        let response: Reply = serde_json::from_str(&line)?;
-        if let Reply::Error { reason } = &response { return Err(format!("worker aborted: {reason}").into()); }
-        Ok(response)
+        let response: AuthFrame<Reply> = serde_json::from_str(&line)?;
+        let reply = self.auth.open(response)?;
+        if let Reply::Error { reason } = &reply { return Err(format!("worker aborted: {reason}").into()); }
+        Ok(reply)
     }
 }
 impl Drop for Worker {
@@ -87,11 +107,22 @@ async fn three_process_frost_dkg_over_three_conductors() -> TestResult<()> {
         grants.push(conductors.get(i).unwrap().call(&zomes[i], "prepare_inbox_grant", proposal.clone()).await);
     }
 
+    // Each worker has a distinct encrypted SQLite journal and unique master
+    // key. The harness owns provisioning and temporary filesystem isolation;
+    // this is not an OS key-store or protection from a malicious test host.
+    let state_dir = tempfile::tempdir()?;
     let mut workers = Vec::<Worker>::new();
     let mut public_keys = Vec::new();
     let mut announcements = Vec::new();
     for i in 0..3 {
-        let mut worker = Worker::start()?;
+        let mut channel_id = [0_u8; 32];
+        OsRng.fill_bytes(&mut channel_id);
+        let mut worker = Worker::start(ChannelContext {
+            worker_agent: members[i].clone(),
+            proposal_action: binding.proposal_action.clone(),
+            session_id: spec.session_id,
+            channel_id,
+        }, &state_dir.path().join(format!("worker-{i}.sqlite")))?;
         let Reply::Initialized { local_public_key, outbound } = worker.call(Command::Init {
             binding: binding.clone(), local: members[i].clone(),
         })? else { return Err("unexpected initialisation reply".into()); };

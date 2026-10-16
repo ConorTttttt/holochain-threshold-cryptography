@@ -1,30 +1,59 @@
-//! Disposable demonstration worker. stdio is NOT an authenticated production RPC.
-use holochain_mpc_dkg_worker::{Command, Controller, Reply};
+//! Test-only MAC-authenticated stdio worker with optional encrypted, non-resumable DKG journal. NOT a production conductor RPC.
+use holochain_mpc_dkg_worker::{AuthenticatedController, Command};
+use holochain_mpc_dkg_worker::ipc::{AuthFrame, TestBootstrap};
+use holochain_mpc_runtime::MasterKey;
 use std::io::{self, BufRead, Write};
+use zeroize::Zeroize;
 
 const MAX_LINE: usize = 512 * 1024;
 fn main() {
-    // Explicitly opt in to the testing-only trust boundary.
-    if std::env::args().nth(1).as_deref() != Some("--unsafe-test-stdio") {
-        eprintln!("experimental MPC worker: --unsafe-test-stdio is required; NOT FOR PRODUCTION");
+    // Fail closed: there is no unauthenticated CLI fallback in v0.3.6.
+    if std::env::args().nth(1).as_deref() != Some("--test-authenticated-stdio") {
+        eprintln!("worker requires --test-authenticated-stdio (not for production)");
         std::process::exit(2);
     }
+    authenticated_main();
+}
+
+fn authenticated_main() {
     let stdin = io::stdin();
-    let mut controller = Controller::default();
+    let mut input = stdin.lock();
+    let mut line = String::new();
+    if input.read_line(&mut line).is_err() || line.len() > MAX_LINE {
+        eprintln!("invalid test-only IPC bootstrap"); std::process::exit(2);
+    }
+    let mut bootstrap: TestBootstrap = match serde_json::from_str(&line) {
+        Ok(b) => b,
+        Err(_) => { eprintln!("invalid bootstrap encoding"); std::process::exit(2); }
+    };
+    // Erase cleartext bootstrap material after the authenticated channel owns
+    // its separate key copy. The original channel key is zeroized on drop.
+    let result = match bootstrap.persistence.take() {
+        Some(p) if p.master_key != [0;32] => AuthenticatedController::new_durable(
+            bootstrap.secret, bootstrap.context.clone(),
+            &p.database_path, MasterKey::from_bytes(p.master_key)),
+        Some(_) => Err("missing external database encryption key".into()),
+        None => AuthenticatedController::new(bootstrap.secret, bootstrap.context.clone()),
+    };
+    bootstrap.secret.zeroize();
+    line.zeroize();
+    let mut controller = match result {
+        Ok(c) => c,
+        Err(_) => { eprintln!("invalid bootstrap context"); std::process::exit(2); }
+    };
     let mut stdout = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = match line { Ok(line) => line, Err(_) => break };
-        if line.len() > MAX_LINE { eprintln!("IPC frame too large"); std::process::exit(2); }
-        let result = serde_json::from_str::<Command>(&line)
-            .map_err(|_| "invalid command encoding".to_string())
-            .and_then(|command| controller.handle(command));
-        let terminate = result.is_err();
-        let reply = result.unwrap_or_else(|reason| Reply::Error { reason });
-        // Reply contains public data / ciphertext only, no FROST secret shares.
+    for line in input.lines() {
+        let line = match line { Ok(line) if line.len() <= MAX_LINE => line, _ => break };
+        let frame: AuthFrame<Command> = match serde_json::from_str(&line) {
+            Ok(f) => f, Err(_) => { eprintln!("malformed authenticated IPC frame"); std::process::exit(1); }
+        };
+        let reply = match controller.handle(frame) {
+            Ok(r) => r,
+            Err(_) => { eprintln!("unauthorized or invalid IPC command; aborted"); std::process::exit(1); }
+        };
         if serde_json::to_writer(&mut stdout, &reply).is_err() ||
            stdout.write_all(b"\n").is_err() || stdout.flush().is_err() {
             std::process::exit(2);
         }
-        if terminate { std::process::exit(1); }
     }
 }

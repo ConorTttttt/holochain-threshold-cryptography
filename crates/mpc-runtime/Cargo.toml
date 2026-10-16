@@ -1,6 +1,6 @@
 [package]
 name = "holochain-mpc-runtime"
-version = "0.3.4"
+version = "0.3.7"
 edition = "2021"
 license = "Apache-2.0"
 description = "Native transactional MPC journal, nonce burn registry and sealed FROST share storage"
@@ -10,6 +10,7 @@ holochain-mpc-core = { path = "../mpc-core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 chacha20poly1305 = "0.10"
 serde_json = "1"
+serde = { workspace = true }
 zeroize = "1.8"
 
 [dev-dependencies]
