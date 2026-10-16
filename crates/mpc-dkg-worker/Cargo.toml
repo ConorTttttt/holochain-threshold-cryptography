@@ -1,0 +1,23 @@
+[package]
+name = "holochain-mpc-dkg-worker"
+version = "0.3.5"
+edition = "2021"
+license = "Apache-2.0"
+description = "Experimental process-isolated FROST DKG controller for Holochain MPC"
+
+[[bin]]
+name = "mpc-dkg-worker"
+path = "src/main.rs"
+
+[dependencies]
+holochain-mpc-core = { path = "../mpc-core" }
+holochain-mpc-security = { path = "../mpc-security" }
+holochain-mpc-frost-ed25519 = { path = "../mpc-frost-ed25519" }
+serde = { workspace = true }
+serde_json = "1.0"
+
+[dev-dependencies]
+hdk = { workspace = true }
+holochain = { version = "=0.7.1", default-features = false, features = ["wasmer-sys-cranelift", "test_utils", "encryption"] }
+tokio = { version = "1", features = ["full"] }
+mpc = { path = "../../dnas/mpc/zomes/coordinator/mpc" }

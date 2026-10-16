@@ -1,6 +1,6 @@
 [package]
 name = "mpc"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -18,3 +18,5 @@ holochain-mpc-adapter = { path = "../../../../../adapters/holochain-0.7" }
 [dev-dependencies]
 holochain = { version = "=0.7.1", default-features = false, features = ["wasmer-sys-cranelift", "test_utils", "encryption"] }
 tokio = { version = "1", features = ["full"] }
+holochain-mpc-frost-ed25519 = { path = "../../../../../crates/mpc-frost-ed25519" }
+holochain-mpc-security = { path = "../../../../../crates/mpc-security" }

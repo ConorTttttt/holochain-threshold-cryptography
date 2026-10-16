@@ -1,17 +1,21 @@
 {
   "name": "holochain-mpc-core-dev",
-  "version": "0.3.3",
+  "version": "0.3.5",
   "private": true,
   "scripts": {
     "build:zomes": "RUSTFLAGS='--cfg getrandom_backend=\"custom\"' cargo build --release --target wasm32-unknown-unknown -p mpc_integrity -p mpc",
     "build:happ": "npm run build:zomes && hc app pack workdir --recursive",
     "test:core": "cargo test -p holochain-mpc-core",
-    "test:sweettest": "npm run build:happ && cargo test -p mpc --test mpc_network -- --nocapture",
+    "test:sweettest": "npm run build:happ && cargo test -p mpc --test mpc_network -- --nocapture && cargo test -p mpc --test dkg_live -- --nocapture && cargo test -p holochain-mpc-dkg-worker --test three_processes -- --nocapture",
     "test": "npm run test:native && npm run test:sweettest",
     "test:runtime": "cargo test -p holochain-mpc-runtime --test durable -- --nocapture",
     "test:policy": "cargo test -p holochain-mpc-security --test group_activation -- --nocapture",
     "test:security": "cargo test -p holochain-mpc-security --test security_protocol -- --nocapture",
     "test:frost": "cargo test -p holochain-mpc-frost-ed25519 --test three_agents -- --nocapture",
-    "test:native": "npm run test:core && npm run test:security && npm run test:policy && npm run test:runtime && npm run test:frost"
+    "test:native": "npm run test:core && npm run test:security && npm run test:policy && npm run test:runtime && npm run test:frost && npm run test:worker-unit",
+    "check:holochain-versions": "python3 scripts/check_holochain_versions.py",
+    "test:dkg-live": "npm run build:happ && cargo test -p mpc --test dkg_live -- --nocapture",
+    "test:dkg-process": "npm run build:happ && cargo test -p holochain-mpc-dkg-worker --test three_processes -- --nocapture",
+    "test:worker-unit": "cargo test -p holochain-mpc-dkg-worker --lib -- --nocapture"
   }
 }

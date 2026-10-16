@@ -1,6 +1,6 @@
 [package]
 name = "holochain-mpc-security"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 license = "Apache-2.0"
 description = "Reusable authenticated echo-broadcast gate and sealed peer messages for Holochain MPC"

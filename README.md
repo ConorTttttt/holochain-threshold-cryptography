@@ -1,4 +1,13 @@
-# Holochain MPC Core — v0.3.3 DKG upgrade (experimental source)
+
+## v0.3.5 — Process-isolated DKG (experimental)
+
+`npm run test:dkg-process` launches three separate native `mpc-dkg-worker` child processes,
+one per Holochain conductor. Each retains its own FROST secret/key and exchanges
+public DKG envelopes and encrypted Round-2 ciphertext via its conductor.
+This uses a **test-only unauthenticated stdio parent/child IPC**; there is no
+restart recovery or OS-keystore binding. See `docs/V035_PROCESS_ISOLATED_DKG.md`.
+
+# Holochain MPC Core — v0.3.4 live-DKG integration test (experimental source)
 
 An **application-independent Holochain 0.7 coordination primitive** with a
 native FROST Ed25519 cryptographic provider, v0.3.1 security
@@ -6,8 +15,15 @@ protocol crate, and v0.3.2 native transactional runtime. Native key generation, 
 X25519+XSalsa20Poly1305 encryption, and threshold signing remain separated
 from the DHT and from any payment/identity application logic.
 
-**Status: source-only release, not compiled, executed or audited in this
-build environment. Do not use with production keys, assets or identity data.**
+**Status:** v0.3.3 native suites (26 tests) and three-conductor coordination Sweettest (1 test) passed in the user's Holonix environment. The **new v0.3.4 live-DKG test has NOT been compiled or executed here**. Neither version is audited or ready for production keys, assets or identity data.
+
+## What is new in v0.3.4
+
+- `dnas/mpc/zomes/coordinator/mpc/tests/dkg_live.rs` adds a **separate** Sweettest using three running Holochain conductors and real agent identity/proposal action hashes. All DKG announce, compact echo, transcript-attest and encrypted Round-2 payloads traverse `send_protocol_message` → private recipient `get_inbox`, rather than in-memory cross-party delivery.
+- Native FROST controllers independently calculate their own verified echo gates and Round-2 shares, then complete DKG and compare public key packages. Public group activation attestations are published and authenticated by Holochain action authors. A native signature smoke test verifies 2-of-3 key usability; **signing messages themselves are not transported via Holochain** in this milestone.
+- No DNA schema/wire format changes. Existing 0.3.3 session files are preserved; the 0.3.4 source package increases version metadata and native integration coverage only.
+- The test harness provisions capability secrets directly and retains ephemeral X25519 and FROST secrets within one Rust test process. This is **not** an independently deployable secure sidecar, durable event journal, restart-safe DKG process, portable cryptographic receipt, or Byzantine reliable broadcast.
+- Run `npm run test:dkg-live` inside Holonix from the repository root. `npm run test:sweettest` now runs both the old coordination test and the new DKG test sequentially. See [docs/V034_LIVE_DKG_INTEGRATION.md](docs/V034_LIVE_DKG_INTEGRATION.md).
 
 ## What's new in the v0.3.3 DKG research upgrade
 
@@ -70,7 +86,7 @@ Detailed design: [docs/V032_SECURITY_DESIGN.md](docs/V032_SECURITY_DESIGN.md).
 - Additional native tests for equivocation, withholding, bogus attestations,
   context/tampering, replay, encrypted actual FROST DKG shares and valid 2-of-3
   signing. Holochain Sweettest source checks new registry records.
-- FROST randomness updated for 3.0.0's `rand_core` 0.10 API.
+- FROST randomness uses `rand 0.8` / `rand_core 0.6`-compatible `OsRng`, as required by `frost-ed25519 3.0.0`.
 
 ## Repository
 

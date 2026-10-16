@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "holochain-mpc-adapter"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "hdk",
  "holochain-mpc-core",
@@ -2751,15 +2751,30 @@ dependencies = [
 
 [[package]]
 name = "holochain-mpc-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "serde",
  "sha2 0.10.9",
 ]
 
 [[package]]
+name = "holochain-mpc-dkg-worker"
+version = "0.3.5"
+dependencies = [
+ "hdk",
+ "holochain",
+ "holochain-mpc-core",
+ "holochain-mpc-frost-ed25519",
+ "holochain-mpc-security",
+ "mpc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "holochain-mpc-frost-ed25519"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "frost-ed25519",
  "holochain-mpc-core",
@@ -2773,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "holochain-mpc-runtime"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "chacha20poly1305",
  "holochain-mpc-core",
@@ -2785,7 +2800,7 @@ dependencies = [
 
 [[package]]
 name = "holochain-mpc-security"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "crypto_box",
  "holochain-mpc-core",
@@ -4715,12 +4730,14 @@ checksum = "1fafa6961cabd9c63bcd77a45d7e3b7f3b552b70417831fb0f56db717e72407e"
 
 [[package]]
 name = "mpc"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "hdk",
  "holochain",
  "holochain-mpc-adapter",
  "holochain-mpc-core",
+ "holochain-mpc-frost-ed25519",
+ "holochain-mpc-security",
  "mpc_integrity",
  "serde",
  "serde_json",
@@ -4729,7 +4746,7 @@ dependencies = [
 
 [[package]]
 name = "mpc_integrity"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "hdi",
  "holochain-mpc-core",
