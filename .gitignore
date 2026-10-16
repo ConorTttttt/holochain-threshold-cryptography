@@ -1,4 +1,7 @@
 /target
 **/*.swp
 .DS_Store
-Cargo.lock
+
+# Generated Holochain bundles
+/dnas/mpc/workdir/*.dna
+/workdir/*.happ
