@@ -210,12 +210,19 @@ pub fn receive_protocol_message(input: IncomingMessage) -> ExternResult<Delivery
     }
     // The zome has no cryptographic side effects. Persist BEFORE success reply.
     // Concurrent calls can race on read-before-write: get_inbox deduplicates
-    // logically, while strict once-only crypto effects need a transactional
-    // local sidecar in v0.3 (see SECURITY.md).
-    let action = create_entry(&EntryTypes::InboxEvent(InboxEvent {
-        proposal: input.proposal,
-        envelope: input.envelope,
-    }))?;
+    // logically and reports conflicting duplicates as equivocation, while
+    // strict once-only crypto effects need a transactional local sidecar in
+    // v0.3 (see SECURITY.md).
+    //
+    // Relaxed chain-top ordering: peers deliver concurrently (every DKG round
+    // fans in), and strict ordering failed all but one with HeadMoved. The
+    // private InboxEvent's validation does not depend on chain position. The
+    // accepted cost: a delivery authorised just before a concurrent grant
+    // revocation may be committed after it.
+    let entry = EntryTypes::InboxEvent(InboxEvent { proposal: input.proposal, envelope: input.envelope });
+    let ScopedEntryDefIndex { zome_index, zome_type } = (&entry).try_into()?;
+    let action = create(CreateInput::new(EntryDefLocation::app(zome_index, zome_type),
+        EntryVisibility::from(&entry), entry.try_into()?, ChainTopOrdering::Relaxed))?;
     Ok(DeliveryReceipt { status: ReceiptStatus::Stored, storage_action: action })
 }
 
@@ -251,11 +258,18 @@ pub fn send_protocol_message(input: SendMessage) -> ExternResult<DeliveryReceipt
     )?;
     match response {
         ZomeCallResponse::Ok(io) => io.decode().map_err(|e| guest(e.to_string())),
-        // Do not print `ZomeCallResponse::Unauthorized` Debug output: some
-        // Holochain versions carry the capability secret inside that variant.
-        // The client can retry safely with the SAME message ID after resolving
-        // an authorization, connectivity, or remote validation failure.
-        _ => Err(guest("Remote delivery not acknowledged; retry with the same round/sequence")),
+        // Name the failure kind, but never print `Unauthorized` Debug output:
+        // in Holochain 0.7.1 that variant carries the capability secret. The
+        // same message ID is idempotent at the recipient (AlreadyStored), but
+        // whether to resend is the caller's policy, not this function's.
+        ZomeCallResponse::Unauthorized(..) =>
+            Err(guest("Remote delivery not acknowledged: unauthorized (capability rejected)")),
+        ZomeCallResponse::AuthenticationFailed(..) =>
+            Err(guest("Remote delivery not acknowledged: call signature not authenticated")),
+        ZomeCallResponse::NetworkError(e) => Err(guest(format!(
+            "Remote delivery not acknowledged: network: {}", e.chars().take(300).collect::<String>()))),
+        ZomeCallResponse::CountersigningSession(_) =>
+            Err(guest("Remote delivery not acknowledged: countersigning session")),
     }
 }
 

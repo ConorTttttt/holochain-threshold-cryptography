@@ -106,7 +106,11 @@ for file in ['crates/mpc-frost-ed25519/src/lib.rs',
              'docs/V040_PHASE5C_C_TRANSPORT_PROBE.md',
              'docs/V040_PHASE5C_C_OFFLINE_REPORT.md',
              'scripts/check_wasm_imports.py',
-             'scripts/phase5c_b_audit.sh']:
+             'scripts/phase5c_b_audit.sh',
+             'crates/mpc-dkg-worker/tests/share_custody.rs',
+             'docs/V040_PHASE7_SHARE_CUSTODY.md',
+             'scripts/phase6_rehearsal.py',
+             'docs/V040_PHASE6_REHEARSAL.md']:
     if not (ROOT / file).is_file():
         errors.append(f'missing file: {file}')
 if errors:

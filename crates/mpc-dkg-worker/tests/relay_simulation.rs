@@ -17,6 +17,8 @@ struct Network {
     inbox: BTreeMap<Vec<u8>, Vec<Envelope>>,
     keys: Vec<KeyEvidence>,
     stop_send: bool,
+    /// Key registrations not yet visible through this stand-in DHT.
+    hidden_keys: Vec<Vec<u8>>,
 }
 struct Transport { shared: Arc<Mutex<Network>>, local: Vec<u8> }
 impl MpcTransport for Transport {
@@ -34,7 +36,8 @@ impl MpcTransport for Transport {
         Ok(self.shared.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
     }
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>,String> {
-        Ok(self.shared.lock().unwrap().keys.clone())
+        let net = self.shared.lock().unwrap();
+        Ok(net.keys.iter().filter(|k| !net.hidden_keys.contains(&k.author)).cloned().collect())
     }
     async fn publish(&mut self, env: &Envelope) -> Result<SendReceipt,String> {
         let mut net = self.shared.lock().unwrap();
@@ -173,4 +176,46 @@ async fn conflicting_duplicate_inbox_and_cross_session_fail_closed() {
     net3.lock().unwrap().inbox.insert(vec![1;39],vec![input]);
     assert!(relay3.poll_once().await.is_err());
     assert_eq!(relay3.phase(),Phase::Aborted);
+}
+
+/// Holochain is eventually consistent: a peer's key registration can arrive
+/// after its attestation. The relays must wait, not abort, and then finish.
+#[tokio::test]
+async fn late_visible_key_registration_waits_then_completes() {
+    let binding = make_binding();
+    let shared = Arc::new(Mutex::new(Network::default()));
+    shared.lock().unwrap().hidden_keys.push(vec![3;39]);
+    let mut parties: Vec<_> = (1..=3).map(|member| make_relay(&binding,member,shared.clone())).collect();
+    for relay in &mut parties { relay.start().await.unwrap(); }
+    for _ in 0..10 {
+        for relay in &mut parties { relay.poll_once().await.unwrap(); }
+    }
+    assert!(parties.iter().all(|p| p.phase() == Phase::Attest), "must wait for the full key roster");
+    shared.lock().unwrap().hidden_keys.clear();
+    for _ in 0..20 {
+        for relay in &mut parties {
+            if relay.phase() != Phase::Complete { relay.poll_once().await.unwrap(); }
+        }
+    }
+    assert!(parties.iter().all(|p| p.phase() == Phase::Complete));
+}
+
+/// A second, different key record for one member is a fork: fail closed.
+#[tokio::test]
+async fn forked_key_registration_aborts() {
+    let binding = make_binding();
+    let shared = Arc::new(Mutex::new(Network::default()));
+    let mut parties: Vec<_> = (1..=3).map(|member| make_relay(&binding,member,shared.clone())).collect();
+    for relay in &mut parties { relay.start().await.unwrap(); }
+    shared.lock().unwrap().keys.push(KeyEvidence {
+        author: vec![2;39], action: vec![0x55;39], public_key: [0x66;32] });
+    let mut aborted = false;
+    for _ in 0..10 {
+        for relay in &mut parties {
+            if relay.phase() == Phase::Aborted { continue; }
+            if relay.poll_once().await.is_err() { aborted = true; }
+        }
+    }
+    assert!(aborted && parties.iter().all(|p| p.phase() != Phase::Complete),
+        "a forked registration must never reach Round 2");
 }

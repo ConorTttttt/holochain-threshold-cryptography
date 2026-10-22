@@ -126,17 +126,18 @@ async fn two_agent_assigned_grants_and_sealed_capability_exchange() -> TestResul
     let still = grants(&conductors.get(0).unwrap(), &cells[0]).await?;
     verify_created_grant(&still, &record, a.get_raw_39(), dup.grant_hash.get_raw_39())?;
 
-    // The sender zome deliberately converts all non-OK remote responses into
-    // one generic error (so it does not leak the capability secret in Debug
-    // output). Assert that exact failure, then prove the SAME round/sequence
-    // succeeds using the independent, unrevoked grant. This differential
-    // excludes malformed messages, replay and ordinary connectivity failures.
+    // The sender zome names the failure kind without the `Unauthorized`
+    // Debug output (which would carry the capability secret). A revoked grant
+    // must fail as unauthorized; then the SAME round/sequence succeeds using
+    // the independent, unrevoked grant. This differential excludes malformed
+    // messages, replay and ordinary connectivity failures.
     let revoked: Result<DeliveryReceipt, _> = conductors.get(1).unwrap()
         .call_fallible(&zomes[1], "send_protocol_message",
             send(2, cap_for_b.cap_secret.clone())).await;
     let error = format!("{:?}", revoked.expect_err("revoked grant unexpectedly authorised delivery"));
-    assert!(error.contains("Remote delivery not acknowledged; retry with the same round/sequence"),
+    assert!(error.contains("Remote delivery not acknowledged: unauthorized (capability rejected)"),
         "unexpected error after revocation: {error}");
+    assert!(!error.contains(&format!("{:?}", cap_for_b.cap_secret)), "error leaked the capability secret");
     let after_rejected: Vec<holochain_mpc_core::Envelope> = conductors.get(0).unwrap()
         .call(&zomes[0], "get_inbox", proposal.clone()).await;
     assert_eq!(after_rejected, before, "revoked secret must not alter the inbox");

@@ -35,6 +35,14 @@ pub struct SendReceipt {
     pub already_stored: bool,
 }
 
+/// True only when every visible record is from a distinct ceremony member
+/// and some members are simply not visible yet (eventual consistency).
+fn key_roster_incomplete(binding: &Binding, keys: &[KeyEvidence]) -> bool {
+    let authors: BTreeSet<&Vec<u8>> = keys.iter().map(|k| &k.author).collect();
+    authors.len() == keys.len() && authors.len() < binding.spec.participants.len() &&
+        keys.iter().all(|k| binding.spec.contains(&k.author))
+}
+
 /// Implement ONLY with a conductor-authenticated, cell-pinned app transport.
 /// The transport is responsible for fresh authorised signatures for EVERY
 /// zome RPC, including separate signatures if a later RPC is attempted.
@@ -282,8 +290,16 @@ impl<N: LocalDkgNode, T: MpcTransport> RelayEngine<N, T> {
                     self.phase = Phase::Attest;
                 }
                 Phase::Attest if self.attesters.len() == self.binding.spec.participants.len()-1 => {
-                    let verified = self.mirror.finalize().map_err(|e| e.to_string())?;
+                    // A peer's key registration can reach this conductor after
+                    // its attestation. While the roster is merely incomplete,
+                    // wait for a later poll: no randomness is consumed and
+                    // nothing is published. Duplicate, forked, foreign or
+                    // malformed records still fail closed in `round_two`.
                     let keys = self.transport.get_encryption_keys().await?;
+                    if key_roster_incomplete(&self.binding, &keys) {
+                        return Ok((delivered, published));
+                    }
+                    let verified = self.mirror.finalize().map_err(|e| e.to_string())?;
                     let my_key = self.public_key.ok_or("own transport key missing")?;
                     let (transcript, outbound) = self.node.round_two(&keys,my_key)?;
                     if transcript != verified.hash() || self.transcript != Some(transcript) {

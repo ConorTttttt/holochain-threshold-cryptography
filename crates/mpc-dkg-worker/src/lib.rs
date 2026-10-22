@@ -8,9 +8,10 @@
 //! from Holochain conductor-authenticated private inbox records, verify every
 //! key binding's AUTHOR and ACTION, and keep the child's stdio pipes private.
 //! Arbitrary callers can LIE on this IPC channel: it is NOT a production
-//! authenticated sidecar API. Child state is volatile: a crash ABORTS DKG;
-//! there is NO key recovery, live signing, OS secret provisioning or rollback
-//! protection in this release. Never use it with valuable keys.
+//! authenticated sidecar API. A crash during DKG ABORTS it; in durable mode
+//! a COMPLETED share is sealed write-once and reopened only through
+//! `recover_completed_share` (Phase 7). There is NO live signing service, OS
+//! secret provisioning or rollback protection. Never use it with valuable keys.
 use std::collections::{BTreeMap, BTreeSet};
 pub mod ipc;
 #[cfg(unix)]
@@ -97,8 +98,12 @@ struct Active {
     round_one: Option<BTreeMap<frost::Identifier, frost::RoundOne>>,
     incoming_shares: BTreeMap<frost::Identifier, frost::RoundTwo>,
     phase: Phase,
-    // Deliberately never exported. Dropped when worker exits.
+    // Never exported in a reply. A durable controller seals it, with the
+    // public package and descriptor, as `ShareCustody`; otherwise it is
+    // dropped when the worker exits.
     completed_key: Option<frost::KeyPackage>,
+    completed_public: Option<frost::PublicKeyPackage>,
+    completed_descriptor: Option<GroupDescriptor>,
 }
 #[derive(PartialEq, Eq)]
 enum Phase { Broadcast, CollectShares, Completed }
@@ -110,7 +115,33 @@ impl Default for Controller {
 
 fn invalid(reason: &'static str) -> String { reason.to_owned() }
 
+/// Phase 7 durable custody of one member's completed FROST share. It exists
+/// only as `RuntimeStore` ciphertext, written once per (proposal, epoch,
+/// owner) and bound to the group descriptor digest. Deliberately not `Debug`.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShareCustody {
+    pub schema: u16,
+    pub binding: frost::Binding,
+    pub key_package: frost::KeyPackage,
+    pub public_key_package: frost::PublicKeyPackage,
+    pub descriptor: GroupDescriptor,
+}
+const CUSTODY_SCHEMA: u16 = 1;
+
 impl Controller {
+    /// The completed share as zeroizing custody plaintext, for sealing.
+    fn custody_plaintext(&self) -> Result<zeroize::Zeroizing<Vec<u8>>, String> {
+        let state = self.active.as_ref().ok_or_else(|| invalid("no completed DKG"))?;
+        let (Some(key_package), Some(public), Some(descriptor)) = (state.completed_key.as_ref(),
+            state.completed_public.as_ref(), state.completed_descriptor.as_ref()) else {
+            return Err(invalid("completed DKG has no key package"));
+        };
+        let custody = ShareCustody { schema: CUSTODY_SCHEMA, binding: state.binding.clone(),
+            key_package: key_package.clone(), public_key_package: public.clone(),
+            descriptor: descriptor.clone() };
+        Ok(zeroize::Zeroizing::new(serde_json::to_vec(&custody).map_err(|e| e.to_string())?))
+    }
     pub fn handle(&mut self, command: Command) -> Result<Reply, String> {
         if self.poisoned { return Err(invalid("ceremony aborted; start a fresh process and fresh proposal")); }
         let result = self.process(command);
@@ -139,7 +170,8 @@ impl Controller {
                 self.active = Some(Active { binding, local, party, broadcast, transport_key,
                     echo_sequence: 2, seen: BTreeSet::new(), peer_keys: BTreeMap::new(),
                     gate: None, round_one: None, incoming_shares: BTreeMap::new(),
-                    phase: Phase::Broadcast, completed_key: None });
+                    phase: Phase::Broadcast, completed_key: None, completed_public: None,
+                    completed_descriptor: None });
                 Ok(Reply::Initialized { local_public_key, outbound })
             }
             Command::Deliver { authenticated_sender, envelope } => {
@@ -244,7 +276,7 @@ impl Controller {
                    state.incoming_shares.len() != state.binding.spec.participants.len() - 1 {
                     return Err(invalid("missing encrypted shares or incorrect phase"));
                 }
-                let (secret, _public, evidence) = state.party.part3_with_evidence(
+                let (secret, public, evidence) = state.party.part3_with_evidence(
                     state.round_one.as_ref().ok_or_else(|| invalid("Round-1 packages absent"))?,
                     &state.incoming_shares,
                     state.gate.as_ref().ok_or_else(|| invalid("transcript gate absent"))?)
@@ -256,6 +288,8 @@ impl Controller {
                 let descriptor = evidence.group_descriptor(&state.binding, 0, actions)
                     .map_err(|e| e.to_string())?;
                 state.completed_key = Some(secret);
+                state.completed_public = Some(public);
+                state.completed_descriptor = Some(descriptor.clone());
                 state.phase = Phase::Completed;
                 Ok(Reply::Completed { descriptor })
             }
@@ -342,6 +376,16 @@ impl AuthenticatedController {
         }
         let reply = self.inner.handle(command)?;
         if let Some(store) = self.durable.as_mut() {
+            // Phase 7: seal the completed share write-once BEFORE completion
+            // is journaled or the group descriptor is released. A failure
+            // here aborts the ceremony; a share sealed under a journal that
+            // never reached `completed` is refused by recovery.
+            if let Reply::Completed { descriptor } = &reply {
+                let custody = self.inner.custody_plaintext()?;
+                store.seal_share(&self.context.proposal_action, descriptor.epoch,
+                    &self.context.worker_agent, descriptor.digest().map_err(|e| e.to_string())?,
+                    &custody).map_err(|e| e.to_string())?;
+            }
             // Persist encrypted metadata and the digest of the *public*
             // response before any authenticated IPC output becomes visible.
             let bytes = serde_json::to_vec(&reply).map_err(|e| e.to_string())?;
@@ -354,6 +398,47 @@ impl AuthenticatedController {
         if is_init { self.initialized = true; }
         self.gate.seal(reply)
     }
+}
+
+/// Reopen this node's sealed FROST share after a restart (Phase 7). Refuses
+/// unless the journal records a COMPLETED ceremony for `context` whose final
+/// public reply is exactly `Completed { descriptor }`, and the sealed custody
+/// matches that descriptor, binding, key identifier and public key package.
+/// The caller must still obtain an `ActivatedGroup` before any signing.
+pub fn recover_completed_share(store: &RuntimeStore, context: &ChannelContext,
+                               descriptor: &GroupDescriptor) -> Result<ShareCustody, String> {
+    context.validate()?;
+    let checkpoint = store.dkg_checkpoint(&context.proposal_action, &context.worker_agent,
+        &context.session_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| invalid("no DKG journal for this ceremony"))?;
+    if checkpoint.state != holochain_mpc_runtime::dkg::DkgState::Completed {
+        return Err(invalid("DKG did not complete; no share is recoverable"));
+    }
+    let reply = serde_json::to_vec(&Reply::Completed { descriptor: descriptor.clone() })
+        .map_err(|e| e.to_string())?;
+    if commitment("dkg-ipc-public-reply-v1", &reply) != checkpoint.reply_digest {
+        return Err(invalid("descriptor is not the one this node completed"));
+    }
+    let clear = store.open_share(&context.proposal_action, descriptor.epoch, &context.worker_agent,
+        descriptor.digest().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let custody: ShareCustody = serde_json::from_slice(&clear)
+        .map_err(|_| invalid("sealed share is malformed"))?;
+    custody.binding.validate().map_err(|e| e.to_string())?;
+    let public_hash = commitment("frost-public-key-package-v1",
+        &serde_json::to_vec(&custody.public_key_package).map_err(|e| e.to_string())?);
+    let verifying_key = custody.public_key_package.verifying_key().serialize()
+        .map_err(|e| e.to_string())?;
+    if custody.schema != CUSTODY_SCHEMA || &custody.descriptor != descriptor ||
+       custody.binding.proposal_action != context.proposal_action ||
+       custody.binding.spec.session_id != context.session_id ||
+       custody.binding.spec != descriptor.spec ||
+       custody.key_package.identifier() !=
+           &custody.binding.id_of(&context.worker_agent).map_err(|e| e.to_string())? ||
+       public_hash != descriptor.public_key_package_hash ||
+       verifying_key != descriptor.group_verifying_key {
+        return Err(invalid("sealed share does not match the completed ceremony"));
+    }
+    Ok(custody)
 }
 
 fn to_peers(broadcast: &EchoBroadcast, binding: &frost::Binding, local: &[u8],
