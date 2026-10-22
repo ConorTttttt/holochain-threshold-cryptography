@@ -21,6 +21,11 @@ pub enum MpcCall {
     GetEncryptionKeyBindings,
     RegisterEncryptionKey,
     SendProtocolMessage,
+    /// Phase 8 reads and result publication, authorized only by the opt-in
+    /// signing signer profile.
+    GetGroupActivationAttestations,
+    GetSigningApprovals,
+    PublishResultCommitment,
 }
 
 impl MpcCall {
@@ -31,6 +36,9 @@ impl MpcCall {
             Self::GetEncryptionKeyBindings => "get_encryption_key_bindings",
             Self::RegisterEncryptionKey => "register_encryption_key",
             Self::SendProtocolMessage => "send_protocol_message",
+            Self::GetGroupActivationAttestations => "get_group_activation_attestations",
+            Self::GetSigningApprovals => "get_signing_approvals",
+            Self::PublishResultCommitment => "publish_result_commitment",
         }
     }
 }
@@ -43,6 +51,13 @@ struct OutboundMessage {
     sequence: u64,
     payload: Vec<u8>,
     recipient_cap_secret: serde::de::IgnoredAny,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResultPayload {
+    proposal: ActionHash,
+    result_bytes: Vec<u8>,
+    verification_artifact: Vec<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +95,8 @@ pub fn validate_signed_call(
         return Err("signed call targets another agent, cell or function".into());
     }
     match allowed {
-        MpcCall::GetInbox | MpcCall::GetEncryptionKeyBindings | MpcCall::GetProbeSessionStatus => {
+        MpcCall::GetInbox | MpcCall::GetEncryptionKeyBindings | MpcCall::GetProbeSessionStatus |
+        MpcCall::GetGroupActivationAttestations | MpcCall::GetSigningApprovals => {
             if params.cap_secret.is_some() {
                 return Err("private-local read must not carry a capability secret".into());
             }
@@ -122,6 +138,33 @@ pub fn validate_signed_call(
             }
             let _ = &msg.recipient_cap_secret;
         }
+        MpcCall::PublishResultCommitment => {
+            if params.cap_secret.is_some() {
+                return Err("local result publication must not carry a capability secret".into());
+            }
+            let result: ResultPayload = params.payload.decode()
+                .map_err(|_| "result publication payload is malformed")?;
+            if result.proposal.get_raw_39() != pin.node.proposal_action.as_slice() ||
+               result.result_bytes.is_empty() || result.result_bytes.len() > 64 * 1024 ||
+               result.verification_artifact.is_empty() || result.verification_artifact.len() > 16 * 1024 {
+                return Err("result publication violates local ceremony bounds".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The signer must publish exactly the result the signing session produced.
+pub fn validate_signed_result(
+    pin: &ConductorPin, result_bytes: &[u8], verification_artifact: &[u8], signed: &ZomeCallParamsSigned,
+) -> Result<(), String> {
+    validate_signed_call(pin, MpcCall::PublishResultCommitment, signed)?;
+    let params: ZomeCallParams = holochain_serialized_bytes::decode(signed.bytes.as_bytes())
+        .map_err(|_| "malformed signed result publication")?;
+    let result: ResultPayload = params.payload.decode()
+        .map_err(|_| "malformed result publication payload")?;
+    if result.result_bytes != result_bytes || result.verification_artifact != verification_artifact {
+        return Err("signer substituted a different signing result".into());
     }
     Ok(())
 }

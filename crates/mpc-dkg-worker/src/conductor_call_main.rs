@@ -105,6 +105,9 @@ async fn main() {
             MpcZomeResult::KeyRegistration { .. } => println!("PASS: own encryption key registered"),
             MpcZomeResult::DeliveryReceipt { already_stored, .. } =>
                 println!("PASS: signed delivery acknowledged (already_stored={already_stored})"),
+            MpcZomeResult::ActivationAttestations(_) | MpcZomeResult::SigningApprovals(_) |
+            MpcZomeResult::ResultCommitment { .. } =>
+                return Err("signing-phase calls require the mpc-sign service".into()),
         };
         Ok(())
     }.await;

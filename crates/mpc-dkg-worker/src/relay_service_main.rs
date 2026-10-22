@@ -112,6 +112,10 @@ async fn run() -> Result<(),String> {
     let mut relay=RelayEngine::new(bridge,transport,binding,node.worker_agent)?;
     supervise(&mut relay,policy,stop_signal()).await?;
     let descriptor=relay.descriptor().ok_or("relay completed without group descriptor")?;
+    // Public evidence for activation and signing (Phase 8); the share itself
+    // was already sealed in the node journal before completion was reported.
+    holochain_mpc_dkg_worker::node_service::write_descriptor(&opts.state,descriptor)
+        .map_err(|e|format!("cannot record group descriptor: {e}"))?;
     // Deliberately do not print private key packages or signing secrets.
     println!("PASS: DKG completed with public descriptor, transcript={:?}",descriptor.dkg_transcript_hash);
     Ok(())

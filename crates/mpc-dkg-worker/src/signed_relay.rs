@@ -8,7 +8,9 @@ use crate::conductor_bridge::KeyEvidence;
 use crate::conductor_client::{submit_signed_mpc_call, MpcZomeResult};
 use crate::connection_policy::ConductorPin;
 use crate::relay::{MpcTransport, SendReceipt};
-use crate::signed_call_policy::{validate_signed_envelope, validate_signed_key_registration, MpcCall};
+use crate::signed_call_policy::{validate_signed_envelope, validate_signed_key_registration, validate_signed_result, MpcCall};
+use crate::signing::{ActivationEvidence, ApprovalEvidence, SigningTransport};
+use holochain_mpc_frost_ed25519::SignedArtifact;
 use holochain_conductor_api::ZomeCallParamsSigned;
 use holochain_mpc_core::Envelope;
 use std::net::SocketAddr;
@@ -23,6 +25,24 @@ pub enum SignIntent<'a> {
     ReadEncryptionKeys,
     RegisterEncryptionKey([u8;32]),
     Publish(&'a Envelope),
+    /// Phase 8, signing signer profile only.
+    ReadActivations,
+    ReadApprovals,
+    PublishResult { result_bytes: &'a [u8], verification_artifact: &'a [u8] },
+}
+impl SignIntent<'_> {
+    pub fn call(&self) -> MpcCall {
+        match self {
+            SignIntent::ReadProbeSession => MpcCall::GetProbeSessionStatus,
+            SignIntent::ReadInbox => MpcCall::GetInbox,
+            SignIntent::ReadEncryptionKeys => MpcCall::GetEncryptionKeyBindings,
+            SignIntent::RegisterEncryptionKey(_) => MpcCall::RegisterEncryptionKey,
+            SignIntent::Publish(_) => MpcCall::SendProtocolMessage,
+            SignIntent::ReadActivations => MpcCall::GetGroupActivationAttestations,
+            SignIntent::ReadApprovals => MpcCall::GetSigningApprovals,
+            SignIntent::PublishResult { .. } => MpcCall::PublishResultCommitment,
+        }
+    }
 }
 
 #[allow(async_fn_in_trait)]
@@ -52,13 +72,7 @@ impl<S: FreshMpcSigner> SignedAppTransport<S> {
     pub(crate) async fn call(&mut self, intent: SignIntent<'_>) -> Result<MpcZomeResult, String> {
         // Avoid a self-borrow of `signer` together with `intent` if a caller
         // requested Publish: the envelope is borrowed from the relay engine.
-        let op = match &intent {
-            SignIntent::ReadProbeSession => MpcCall::GetProbeSessionStatus,
-            SignIntent::ReadInbox => MpcCall::GetInbox,
-            SignIntent::ReadEncryptionKeys => MpcCall::GetEncryptionKeyBindings,
-            SignIntent::RegisterEncryptionKey(_) => MpcCall::RegisterEncryptionKey,
-            SignIntent::Publish(_) => MpcCall::SendProtocolMessage,
-        };
+        let op = intent.call();
         let signed = self.signer.sign(intent).await?;
         submit_signed_mpc_call(self.addr, &self.origin, &self.token_file,
             &self.pin, op, signed).await
@@ -96,6 +110,36 @@ impl<S: FreshMpcSigner> MpcTransport for SignedAppTransport<S> {
                 Ok(SendReceipt { action, already_stored })
             }
             _ => Err("signed conductor returned wrong delivery receipt".into()),
+        }
+    }
+}
+
+impl<S: FreshMpcSigner> SigningTransport for SignedAppTransport<S> {
+    async fn activations(&mut self) -> Result<Vec<ActivationEvidence>, String> {
+        match self.call(SignIntent::ReadActivations).await? {
+            MpcZomeResult::ActivationAttestations(records) => Ok(records),
+            _ => Err("signed conductor returned wrong activation response".into()),
+        }
+    }
+    async fn approvals(&mut self) -> Result<Vec<ApprovalEvidence>, String> {
+        match self.call(SignIntent::ReadApprovals).await? {
+            MpcZomeResult::SigningApprovals(records) => Ok(records),
+            _ => Err("signed conductor returned wrong approval response".into()),
+        }
+    }
+    async fn inbox(&mut self) -> Result<Vec<Envelope>, String> { self.get_inbox().await }
+    async fn publish(&mut self, envelope: &Envelope) -> Result<(), String> {
+        MpcTransport::publish(self, envelope).await.map(|_| ())
+    }
+    async fn publish_result(&mut self, artifact: &SignedArtifact) -> Result<(), String> {
+        let verification_artifact = serde_json::to_vec(artifact).map_err(|e| e.to_string())?;
+        let signed = self.signer.sign(SignIntent::PublishResult {
+            result_bytes: &artifact.signature, verification_artifact: &verification_artifact }).await?;
+        validate_signed_result(&self.pin, &artifact.signature, &verification_artifact, &signed)?;
+        match submit_signed_mpc_call(self.addr, &self.origin, &self.token_file,
+            &self.pin, MpcCall::PublishResultCommitment, signed).await? {
+            MpcZomeResult::ResultCommitment { .. } => Ok(()),
+            _ => Err("signed conductor returned wrong result commitment response".into()),
         }
     }
 }

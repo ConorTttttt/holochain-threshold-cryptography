@@ -127,7 +127,9 @@ impl SignerPolicy {
         let proposal=ActionHash::try_from_raw_39(self.binding.proposal_action.clone())
             .map_err(|_|"invalid pinned proposal")?;
         let payload=match op {
-            MpcCall::GetProbeSessionStatus => return Err("FROST signer refuses probe-only operation".into()),
+            MpcCall::GetProbeSessionStatus | MpcCall::GetGroupActivationAttestations |
+            MpcCall::GetSigningApprovals | MpcCall::PublishResultCommitment =>
+                return Err("FROST DKG signer refuses probe- and signing-profile operations".into()),
             MpcCall::GetInbox | MpcCall::GetEncryptionKeyBindings => {
                 if req.envelope.is_some() || req.public_key.is_some() {
                     return Err("read request carries outbound data".into());
@@ -282,7 +284,7 @@ mod tests {
             proposal_action:ActionHash::from_raw_32(vec![7;32]).get_raw_39().to_vec(),
             session_id:[3;32],channel_id:[4;32]}
     }
-    fn req(op:&str)->SignerRequest {SignerRequest {version:1,operation:op.into(),binding:binding(),envelope:None,public_key:None}}
+    fn req(op:&str)->SignerRequest {SignerRequest {version:1,operation:op.into(),binding:binding(),envelope:None,public_key:None,result:None}}
     fn policy()->SignerPolicy {SignerPolicy::new(SignerPolicyFile {binding:binding(),recipients:vec![],spec:None}).unwrap()}
     fn peer()->Vec<u8> {AgentPubKey::from_raw_32(vec![21;32]).get_raw_39().to_vec()}
     fn spec()->SessionSpec {

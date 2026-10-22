@@ -95,6 +95,11 @@ mpc = { path = "../../dnas/mpc/zomes/coordinator/mpc" }
 mpc_integrity = { path = "../../dnas/mpc/zomes/integrity/mpc_integrity" }
 
 [[bin]]
+name = "mpc-sign"
+path = "src/sign_main.rs"
+required-features = ["lair-signer"]
+
+[[bin]]
 name = "mpc-transport-probe"
 path = "src/transport_probe_main.rs"
 required-features = ["lair-signer"]

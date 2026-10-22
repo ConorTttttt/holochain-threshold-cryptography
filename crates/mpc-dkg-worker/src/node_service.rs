@@ -9,6 +9,7 @@ use crate::ipc::{AuthFrame, ChannelContext};
 use crate::{AuthenticatedController, Command};
 use crate::transport_channel::DurableTransportChannel;
 use holochain_mpc_runtime::{transport_key::TransportKeyBinding, MasterKey, RuntimeStore};
+use holochain_mpc_security::activation::GroupDescriptor;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -277,6 +278,38 @@ pub fn pinned_context(dir: &Path) -> io::Result<ChannelContext> {
 pub fn config_path(dir: &Path) -> PathBuf { dir.join(CONFIG) }
 pub fn socket_path(dir: &Path) -> PathBuf { dir.join(SOCKET) }
 pub fn key_path(dir: &Path) -> PathBuf { dir.join(IPC_KEY) }
+
+const DESCRIPTOR: &str = "group-descriptor.json";
+
+/// Record the PUBLIC group descriptor this node completed (write-once). It is
+/// operator evidence, not trusted on its own: `recover_share` re-checks it
+/// against the journal before any share is opened.
+pub fn write_descriptor(state_dir: &Path, descriptor: &GroupDescriptor) -> io::Result<()> {
+    private_directory(state_dir)?;
+    write_private(&state_dir.join(DESCRIPTOR), &serde_json::to_vec_pretty(descriptor)?)
+}
+pub fn read_descriptor(state_dir: &Path) -> io::Result<GroupDescriptor> {
+    private_directory(state_dir)?;
+    let file = private_file(&state_dir.join(DESCRIPTOR))?;
+    if file.metadata()?.len() > 64 * 1024 { return Err(invalid("oversized group descriptor")); }
+    serde_json::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Phase 8: open this node's journal with its master key and reopen the
+/// completed share for `descriptor`. Refused unless that exact descriptor is
+/// the one this node durably completed (see `recover_completed_share`).
+pub fn recover_share(state_dir: &Path, descriptor: &GroupDescriptor)
+    -> io::Result<(ChannelContext, RuntimeStore, crate::ShareCustody)> {
+    let config = read_config(state_dir)?;
+    let master = read_key(&state_dir.join(STATE_KEY))?;
+    let database = state_dir.join(DATABASE);
+    private_file(&database)?;
+    let store = RuntimeStore::open(&database, MasterKey::from_bytes(*master))
+        .map_err(|_| invalid("cannot open node journal"))?;
+    let custody = crate::recover_completed_share(&store, &config.context, descriptor)
+        .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
+    Ok((config.context, store, custody))
+}
 
 #[cfg(test)]
 mod tests {

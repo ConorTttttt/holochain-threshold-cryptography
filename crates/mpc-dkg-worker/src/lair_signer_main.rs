@@ -20,15 +20,20 @@ const MAX_REQUEST:usize=384*1024;
 const MAX_RESPONSE:usize=512*1024;
 const DEADLINE:Duration=Duration::from_secs(15);
 
-struct Args { probe_profile:bool, policy:PathBuf,socket:PathBuf,lair_url:zeroize::Zeroizing<String> }
+struct Args { probe_profile:bool, signing_profile:bool, policy:PathBuf,socket:PathBuf,lair_url:zeroize::Zeroizing<String> }
 fn args() -> Result<Args,String> {
     let mut probe_profile=false;
+    let mut signing_profile=false;
     let mut policy=None;let mut socket=None;let mut lair_url=None;let mut lair_root=None;
     let mut cmd=std::env::args().skip(1);
     while let Some(flag)=cmd.next() {
         if flag=="--probe-profile" {
             if probe_profile {return Err("repeated --probe-profile".into());}
             probe_profile=true;continue;
+        }
+        if flag=="--signing-profile" {
+            if signing_profile {return Err("repeated --signing-profile".into());}
+            signing_profile=true;continue;
         }
         let val=cmd.next().ok_or("missing option value")?;
         match flag.as_str() {
@@ -48,7 +53,8 @@ fn args() -> Result<Args,String> {
     if lair_url.len()>1024 || !lair_url.starts_with("unix://") {
         return Err("only a pre-provisioned local Unix Lair URL is supported".into());
     }
-    Ok(Args{probe_profile,policy:policy.ok_or("missing --policy-file")?,
+    if probe_profile && signing_profile {return Err("choose at most one signer profile".into());}
+    Ok(Args{probe_profile,signing_profile,policy:policy.ok_or("missing --policy-file")?,
         socket:socket.ok_or("missing --signer-socket")?,lair_url})
 }
 
@@ -79,11 +85,13 @@ struct SignerResponse {version:u8,signed:holochain_conductor_api::ZomeCallParams
 enum ActivePolicy {
     Frost(holochain_mpc_dkg_worker::lair_signer::SignerPolicy),
     Probe(holochain_mpc_dkg_worker::probe_signer::ProbeSignerPolicy),
+    Signing(holochain_mpc_dkg_worker::signing_signer::SigningSignerPolicy),
 }
 impl ActivePolicy {
     async fn sign(&self, req:&SignerRequest, lair:&MetaLairClient)
         ->Result<holochain_conductor_api::ZomeCallParamsSigned,String> {
-        match self {Self::Frost(p)=>p.sign(req,lair).await,Self::Probe(p)=>p.sign(req,lair).await}
+        match self {Self::Frost(p)=>p.sign(req,lair).await,Self::Probe(p)=>p.sign(req,lair).await,
+            Self::Signing(p)=>p.sign(req,lair).await}
     }
 }
 
@@ -120,6 +128,9 @@ async fn run()->Result<(),String> {
     let policy=if opts.probe_profile {
         use holochain_mpc_dkg_worker::probe_signer::{read_private_json,ProbeSignerPolicy};
         ActivePolicy::Probe(ProbeSignerPolicy::new(read_private_json(&opts.policy)?)?)
+    } else if opts.signing_profile {
+        use holochain_mpc_dkg_worker::{probe_signer::read_private_json,signing_signer::SigningSignerPolicy};
+        ActivePolicy::Signing(SigningSignerPolicy::new(read_private_json(&opts.policy)?)?)
     } else {ActivePolicy::Frost(read_private_policy(&opts.policy)?)};
     socket_parent(&opts.socket)?;
 

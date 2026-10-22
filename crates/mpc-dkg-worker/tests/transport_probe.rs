@@ -140,6 +140,7 @@ fn request(p: &ProbePlan, env: Option<Envelope>, op: &str) -> SignerRequest {
         binding: signer_binding(p),
         envelope: env,
         public_key: None,
+        result: None,
     }
 }
 

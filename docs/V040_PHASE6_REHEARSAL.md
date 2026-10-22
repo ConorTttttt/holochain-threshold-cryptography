@@ -78,9 +78,8 @@ approved step; it keeps the DNA hash and the source chains.
   user and a local bootstrap server.
 - **Failure, partition and kill behaviour during DKG.** This Phase 6 exit
   criterion is still open.
-- **Signing across independent nodes (Phase 8).** It needs activation,
-  approval, commitment and share exchange over Holochain, plus signer
-  allowlist changes.
+- (Signing across the same three nodes is now part of the rehearsal; see
+  `V040_PHASE8_SIGNING.md`.)
 - **Production custody**: same-UID keys, no anti-rollback.
 - **Byzantine robustness.** The unanimous fail-closed gate lets any one member
   force an abort.

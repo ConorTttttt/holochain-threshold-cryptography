@@ -110,7 +110,12 @@ for file in ['crates/mpc-frost-ed25519/src/lib.rs',
              'crates/mpc-dkg-worker/tests/share_custody.rs',
              'docs/V040_PHASE7_SHARE_CUSTODY.md',
              'scripts/phase6_rehearsal.py',
-             'docs/V040_PHASE6_REHEARSAL.md']:
+             'docs/V040_PHASE6_REHEARSAL.md',
+             'crates/mpc-dkg-worker/src/signing.rs',
+             'crates/mpc-dkg-worker/src/signing_signer.rs',
+             'crates/mpc-dkg-worker/src/sign_main.rs',
+             'crates/mpc-dkg-worker/tests/signing_session.rs',
+             'docs/V040_PHASE8_SIGNING.md']:
     if not (ROOT / file).is_file():
         errors.append(f'missing file: {file}')
 if errors:

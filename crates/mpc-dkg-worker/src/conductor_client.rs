@@ -152,6 +152,9 @@ pub enum MpcZomeResult {
     EncryptionKeys(Vec<crate::conductor_bridge::KeyEvidence>),
     KeyRegistration { action: Vec<u8> },
     DeliveryReceipt { already_stored: bool, action: Vec<u8> },
+    ActivationAttestations(Vec<crate::signing::ActivationEvidence>),
+    SigningApprovals(Vec<crate::signing::ApprovalEvidence>),
+    ResultCommitment { action: Vec<u8> },
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -215,6 +218,46 @@ fn decode_mpc_response(
             let action: holochain_zome_types::prelude::ActionHash = io.decode()
                 .map_err(|_| "conductor returned invalid key registration action")?;
             Ok(MpcZomeResult::KeyRegistration { action:action.get_raw_39().to_vec() })
+        }
+        MpcCall::GetGroupActivationAttestations => {
+            #[derive(serde::Deserialize, Debug)]
+            struct Attestation { proposal: holochain_zome_types::prelude::ActionHash, epoch: u64,
+                descriptor_hash: [u8; 32], dkg_transcript_hash: [u8; 32], public_key_package_hash: [u8; 32] }
+            #[derive(serde::Deserialize, Debug)]
+            struct Record { author: holochain_zome_types::prelude::AgentPubKey, attestation: Attestation }
+            let records: Vec<Record> = io.decode()
+                .map_err(|_| "conductor returned invalid activation attestations")?;
+            if records.len() > 4096 || records.iter().any(|r|
+                r.attestation.proposal.get_raw_39() != pin.node.proposal_action.as_slice()) {
+                return Err("activation attestations outside pinned ceremony".into());
+            }
+            Ok(MpcZomeResult::ActivationAttestations(records.into_iter().map(|r|
+                crate::signing::ActivationEvidence { author: r.author.get_raw_39().to_vec(),
+                    epoch: r.attestation.epoch, descriptor_hash: r.attestation.descriptor_hash,
+                    dkg_transcript_hash: r.attestation.dkg_transcript_hash,
+                    public_key_package_hash: r.attestation.public_key_package_hash }).collect()))
+        }
+        MpcCall::GetSigningApprovals => {
+            #[derive(serde::Deserialize, Debug)]
+            struct Approval { proposal: holochain_zome_types::prelude::ActionHash, operation_id: [u8; 32],
+                group_descriptor_hash: [u8; 32], intent_hash: [u8; 32] }
+            #[derive(serde::Deserialize, Debug)]
+            struct Record { author: holochain_zome_types::prelude::AgentPubKey, approval: Approval }
+            let records: Vec<Record> = io.decode()
+                .map_err(|_| "conductor returned invalid signing approvals")?;
+            if records.len() > 4096 || records.iter().any(|r|
+                r.approval.proposal.get_raw_39() != pin.node.proposal_action.as_slice()) {
+                return Err("signing approvals outside pinned ceremony".into());
+            }
+            Ok(MpcZomeResult::SigningApprovals(records.into_iter().map(|r|
+                crate::signing::ApprovalEvidence { author: r.author.get_raw_39().to_vec(),
+                    operation_id: r.approval.operation_id, group_descriptor_hash: r.approval.group_descriptor_hash,
+                    intent_hash: r.approval.intent_hash }).collect()))
+        }
+        MpcCall::PublishResultCommitment => {
+            let action: holochain_zome_types::prelude::ActionHash = io.decode()
+                .map_err(|_| "conductor returned invalid result commitment action")?;
+            Ok(MpcZomeResult::ResultCommitment { action: action.get_raw_39().to_vec() })
         }
         MpcCall::SendProtocolMessage => {
             let receipt: ReceiptWire = io.decode()

@@ -16,8 +16,12 @@ then starts every node's services together and waits for each relay to report
 Writes are never retried: any failure stops the run and leaves state for
 inspection.
 
+After the DKG it rehearses Phase 8 unless --dkg-only is given: every node
+attests the group, nodes 1 and 3 approve one plan and sign it with two
+independent `mpc-sign` services, and OpenSSL verifies the signature.
+
 Usage (from Holonix or with the Nix-store 0.7.1 tools present):
-  python3 -I scripts/phase6_rehearsal.py [--keep-running]
+  python3 -I scripts/phase6_rehearsal.py [--keep-running] [--dkg-only]
 """
 from __future__ import annotations
 import datetime, fcntl, glob, json, os, re, secrets, select, shutil, signal, socket
@@ -201,6 +205,110 @@ def accept_until_committed(run: "Run", i: int, accept: list, status: list, agent
     fail(f"{NODES[i]} still lacks the proposal as a validation dependency")
 
 
+def phase8(run: "Run", prov: Path, app, ops: list, agents: list, app_ports: list) -> dict:
+    """Activate the group, approve one plan on nodes 1 and 3, sign it with two
+    independent signing services, then verify with OpenSSL (RFC 8032)."""
+    for i in range(len(NODES)):
+        run.step(f"activate-{i+1}", [prov, "activate-group", *app(i), "--record", ops[i] / "ceremony.json",
+                 "--state-dir", ops[i] / "node", "--confirm-activation-write"])
+    signers = [0, 2]  # any two of three
+    message = run.ops / "message.txt"
+    message.write_text("Phase 8 rehearsal: approve test transfer #1 (no value)\n")
+    selected = run.ops / "selected.txt"
+    selected.write_text("\n".join(agents[i] for i in signers) + "\n")
+    plan = run.ops / "plan.json"
+    out = run.step("make-intent", [prov, "make-intent", "--state-dir", ops[0] / "node", "--message-file", message,
+                   "--selected-file", selected, "--out", plan])
+    operation = re.findall(r"operation_id=([0-9a-f]{64})", out)[0]
+    for i in signers:
+        for attempt in range(30):  # read-only: wait until every member's attestation is visible here
+            p = Proc(f"signing-status-{i+1}-{attempt}", [str(a) for a in [prov, "signing-status", *app(i),
+                     "--record", ops[i] / "ceremony.json", "--plan", plan]], run)
+            if p.wait(60) == 0 and "activated=true" in p.text():
+                break
+            time.sleep(5)
+        else:
+            fail(f"{NODES[i]} never saw the full group activation")
+        run.step(f"approve-{i+1}", [prov, "approve-intent", *app(i), "--record", ops[i] / "ceremony.json",
+                 "--plan", plan, "--confirm-approval-write"])
+    services = []
+    for i in signers:
+        node_plan = ops[i] / "plan.json"
+        shutil.copyfile(plan, node_plan)
+        os.chmod(node_plan, 0o600)
+        (ops[i] / "signer-sign").mkdir(mode=0o700)
+        (ops[i] / "signed").mkdir(mode=0o700)
+        run.step(f"signing-policy-{i+1}", [prov, "write-signing-policy", "--record", ops[i] / "ceremony.json",
+                 "--plan", node_plan, "--state-dir", ops[i] / "node", "--caps-dir", ops[i] / "caps",
+                 "--out", ops[i] / "signing-policy.json"])
+        signer = run.start(f"signing-signer-{i+1}", [run.bin / "mpc-lair-signer", "--signing-profile",
+                           "--policy-file", ops[i] / "signing-policy.json",
+                           "--signer-socket", ops[i] / "signer-sign" / "sign.sock",
+                           "--lair-root", run.state / NODES[i] / "ks"])
+        signer.wait_for(r"Lair signer ready", timeout=60)
+    for i in signers:
+        services.append(run.start(f"mpc-sign-{i+1}", [run.bin / "mpc-sign", "--state-dir", ops[i] / "node",
+            "--plan-file", ops[i] / "plan.json", "--app-socket", f"127.0.0.1:{app_ports[i]}",
+            "--origin", f"http://localhost:{app_ports[i]}", "--app-token-file", ops[i] / "app-token",
+            "--installed-app-id", APP_ID, "--dna-hex", (ops[i] / "dna-hex").read_text().strip(),
+            "--signer-socket", ops[i] / "signer-sign" / "sign.sock", "--poll-ms", "1000", "--max-polls", "300",
+            "--out-dir", ops[i] / "signed"]))
+    deadline = time.time() + 600
+    while any(s.proc.poll() is None for s in services):
+        failed = [s for s in services if s.proc.poll() not in (None, 0)]
+        if failed:
+            fail(f"{failed[0].name} aborted signing (exit {failed[0].proc.poll()}); see {failed[0].logfile}")
+        if time.time() > deadline:
+            fail("signing did not finish within 10 minutes")
+        time.sleep(1)
+    signatures = {(ops[i] / "signed" / "signature.bin").read_bytes() for i in signers}
+    if len(signatures) != 1:
+        fail("the two independent aggregators produced different signatures")
+    signed = ops[signers[0]] / "signed"
+    der = bytes.fromhex("302a300506032b6570032100") + (signed / "group-public-key.bin").read_bytes()
+    pem = signed / "group-public-key.pem"
+    import base64
+    pem.write_text("-----BEGIN PUBLIC KEY-----\n" + base64.b64encode(der).decode() + "\n-----END PUBLIC KEY-----\n")
+    check = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(pem), "-rawin",
+                            "-in", str(signed / "signed-message.bin"), "-sigfile", str(signed / "signature.bin")],
+                           capture_output=True, text=True)
+    if check.returncode != 0 or "Signature Verified Successfully" not in check.stdout:
+        fail(f"OpenSSL rejected the group signature: {check.stdout} {check.stderr}")
+    tampered = signed / "tampered-message.bin"
+    tampered.write_bytes((signed / "signed-message.bin").read_bytes() + b"!")
+    negative = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(pem), "-rawin",
+                               "-in", str(tampered), "-sigfile", str(signed / "signature.bin")],
+                              capture_output=True, text=True)
+    if negative.returncode == 0:
+        fail("OpenSSL accepted the signature over a tampered message")
+    # Live negative checks: no second signature for the same operation, and no
+    # signing policy for a member the plan did not select.
+    first = signers[0]
+    (ops[first] / "signed-again").mkdir(mode=0o700)
+    again = Proc(f"mpc-sign-{first+1}-again", [str(a) for a in [run.bin / "mpc-sign", "--state-dir", ops[first] / "node",
+        "--plan-file", ops[first] / "plan.json", "--app-socket", f"127.0.0.1:{app_ports[first]}",
+        "--origin", f"http://localhost:{app_ports[first]}", "--app-token-file", ops[first] / "app-token",
+        "--installed-app-id", APP_ID, "--dna-hex", (ops[first] / "dna-hex").read_text().strip(),
+        "--signer-socket", ops[first] / "signer-sign" / "sign.sock", "--poll-ms", "500", "--max-polls", "20",
+        "--out-dir", ops[first] / "signed-again"]], run)
+    if again.wait(120) == 0 or any((ops[first] / "signed-again").iterdir()):
+        fail("a second signing run for the same operation was not refused")
+    outsider = next(i for i in range(len(NODES)) if i not in signers)
+    shutil.copyfile(plan, ops[outsider] / "plan.json")
+    refused = Proc(f"signing-policy-{outsider+1}-refused", [str(a) for a in [prov, "write-signing-policy",
+        "--record", ops[outsider] / "ceremony.json", "--plan", ops[outsider] / "plan.json",
+        "--state-dir", ops[outsider] / "node", "--caps-dir", ops[outsider] / "caps",
+        "--out", ops[outsider] / "signing-policy.json"]], run)
+    if refused.wait(60) == 0:
+        fail("a non-selected member obtained a signing policy")
+    log("PASS: a repeated signing run and a non-selected member were both refused")
+    sig_hex = next(iter(signatures)).hex()
+    log(f"PASS: nodes {signers[0]+1} and {signers[1]+1} produced one approved 2-of-3 Ed25519 signature; "
+        f"OpenSSL verifies it (RFC 8032) and rejects a tampered message")
+    return {"operation_id": operation, "signers": [agents[i] for i in signers], "signature": sig_hex,
+            "group_public_key": (signed / "group-public-key.bin").read_bytes().hex(), "openssl": "verified"}
+
+
 def build():
     log("building worker binaries (lair-signer features)")
     r = subprocess.run(["cargo", "build", "--locked", "-p", "holochain-mpc-dkg-worker",
@@ -211,7 +319,7 @@ def build():
         fail("workdir/holochain-mpc-core.happ missing; run npm run build:happ")
 
 
-def main(keep_running: bool) -> None:
+def main(keep_running: bool, skip_signing: bool) -> None:
     build()
     run = Run()
     log(f"run directory {run.root} (THROWAWAY passphrase in THROWAWAY-passphrase)")
@@ -357,7 +465,10 @@ def main(keep_running: bool) -> None:
             fail(f"nodes disagree on the DKG transcript: {transcripts}")
         log(f"PASS: three independent conductors completed one 2-of-3 DKG; transcript {transcripts[0]}")
         summary = {"run": str(run.root), "dna": dna, "agents": agents, "transcript": transcripts[0],
-                   "network_seed": run.seed, "completed_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                   "network_seed": run.seed}
+        if not skip_signing:
+            summary["signing"] = phase8(run, prov, app, ops, agents, app_ports)
+        summary["completed_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         (run.root / "RESULT.json").write_text(json.dumps(summary, indent=2) + "\n")
         log(f"result written to {run.root / 'RESULT.json'}")
         if keep_running:
@@ -368,4 +479,4 @@ def main(keep_running: bool) -> None:
 
 
 if __name__ == "__main__":
-    main("--keep-running" in sys.argv[1:])
+    main("--keep-running" in sys.argv[1:], "--dkg-only" in sys.argv[1:])

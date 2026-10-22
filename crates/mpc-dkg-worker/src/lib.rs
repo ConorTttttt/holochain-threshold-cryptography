@@ -40,6 +40,8 @@ pub mod capability_exchange;
 pub mod transport_probe;
 #[cfg(all(unix, feature = "lair-signer"))]
 pub mod probe_signer;
+#[cfg(all(unix, feature = "lair-signer"))]
+pub mod signing_signer;
 use ipc::{AuthChannel, AuthFrame, ChannelContext, Role};
 use holochain_mpc_core::Envelope;
 use holochain_mpc_frost_ed25519 as frost;
@@ -84,6 +86,8 @@ pub enum Reply {
 
 pub mod transport_channel;
 pub mod key_pinning;
+#[cfg(unix)]
+pub mod signing;
 
 struct Active {
     binding: frost::Binding,

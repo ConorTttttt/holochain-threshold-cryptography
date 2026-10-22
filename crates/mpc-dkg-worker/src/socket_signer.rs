@@ -4,7 +4,7 @@
 //! The raw private agent signing key never enters this process.
 use crate::connection_policy::ConductorPin;
 use crate::signed_relay::{FreshMpcSigner, SignIntent};
-use crate::signed_call_policy::{validate_signed_call, validate_signed_envelope, validate_signed_key_registration, MpcCall};
+use crate::signed_call_policy::{validate_signed_call, validate_signed_envelope, validate_signed_key_registration, validate_signed_result};
 use holochain_conductor_api::ZomeCallParamsSigned;
 use holochain_mpc_core::Envelope;
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,15 @@ pub struct SignerRequest {
     pub binding: SignerBinding,
     pub envelope: Option<Envelope>,
     pub public_key: Option<[u8;32]>,
+    /// Phase 8 result publication only; absent (and not serialized) otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ResultRequest>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResultRequest {
+    pub result_bytes: Vec<u8>,
+    pub verification_artifact: Vec<u8>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,15 +90,16 @@ impl UnixMpcSigner {
     }
 
     fn request(&self, intent: &SignIntent<'_>) -> SignerRequest {
-        let (operation,envelope,public_key) = match intent {
-            SignIntent::ReadProbeSession => (MpcCall::GetProbeSessionStatus,None,None),
-            SignIntent::ReadInbox => (MpcCall::GetInbox,None,None),
-            SignIntent::ReadEncryptionKeys => (MpcCall::GetEncryptionKeyBindings,None,None),
-            SignIntent::RegisterEncryptionKey(key) => (MpcCall::RegisterEncryptionKey,None,Some(*key)),
-            SignIntent::Publish(env) => (MpcCall::SendProtocolMessage,Some((*env).clone()),None),
+        let (envelope,public_key,result) = match intent {
+            SignIntent::RegisterEncryptionKey(key) => (None,Some(*key),None),
+            SignIntent::Publish(env) => (Some((*env).clone()),None,None),
+            SignIntent::PublishResult { result_bytes, verification_artifact } => (None,None,
+                Some(ResultRequest { result_bytes:result_bytes.to_vec(),
+                    verification_artifact:verification_artifact.to_vec() })),
+            _ => (None,None,None),
         };
-        SignerRequest { version:1,operation:operation.name().into(),
-            binding:SignerBinding::from(&self.pin),envelope,public_key }
+        SignerRequest { version:1,operation:intent.call().name().into(),
+            binding:SignerBinding::from(&self.pin),envelope,public_key,result }
     }
 
     async fn request_signed(&self, req: &SignerRequest) -> Result<ZomeCallParamsSigned,String> {
@@ -157,19 +167,15 @@ fn same_user_peer(socket: &UnixStream) -> Result<(),String> {
 impl FreshMpcSigner for UnixMpcSigner {
     async fn sign(&mut self, intent: SignIntent<'_>) -> Result<ZomeCallParamsSigned,String> {
         let request=self.request(&intent);
-        let call=match &intent {
-            SignIntent::ReadProbeSession=>MpcCall::GetProbeSessionStatus,
-            SignIntent::ReadInbox=>MpcCall::GetInbox,
-            SignIntent::ReadEncryptionKeys=>MpcCall::GetEncryptionKeyBindings,
-            SignIntent::RegisterEncryptionKey(_)=>MpcCall::RegisterEncryptionKey,
-            SignIntent::Publish(_)=>MpcCall::SendProtocolMessage,
-        };
+        let call=intent.call();
         let signed=self.request_signed(&request).await?;
         validate_signed_call(&self.pin,call,&signed)?;
         match intent {
             SignIntent::Publish(envelope) => validate_signed_envelope(&self.pin,envelope,&signed)?,
             SignIntent::RegisterEncryptionKey(key) =>
                 validate_signed_key_registration(&self.pin,key,&signed)?,
+            SignIntent::PublishResult { result_bytes, verification_artifact } =>
+                validate_signed_result(&self.pin,result_bytes,verification_artifact,&signed)?,
             _=>{},
         }
         Ok(signed)
