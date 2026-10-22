@@ -19,6 +19,19 @@ pub const MAX_SEALED_PAYLOAD: usize = 3 * 1024;// Bound nested JSON byte-array e
 pub struct NativeChannelKey { key: SecretKey }
 impl NativeChannelKey {
     pub fn generate() -> Self { Self { key: SecretKey::generate(&mut OsRng) } }
+    /// Reconstitute an existing native X25519 identity from an already
+    /// authenticated, zeroising storage buffer. This does NOT provision a key
+    /// and must not be called on untrusted or logged material.
+    ///
+    /// `crypto_box::SecretKey` zeroises its internal secret on drop.
+    pub fn from_secret_bytes(secret: &[u8; 32]) -> Result<Self, SecurityError> {
+        if secret.iter().all(|b| *b == 0) {
+            return Err(SecurityError::Invalid("zero native transport secret"));
+        }
+        let key = SecretKey::from_slice(secret)
+            .map_err(|_| SecurityError::Invalid("invalid native transport secret"))?;
+        Ok(Self { key })
+    }
     pub fn public_key(&self) -> [u8; 32] { *self.key.public_key().as_bytes() }
     pub fn seal(&self, ceremony: &Ceremony, header: ChannelHeader,
                 recipient_public_key: [u8; 32], payload: &[u8]) -> Result<SealedPacket, SecurityError> {

@@ -15,6 +15,30 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod ipc;
 #[cfg(unix)]
 pub mod node_service;
+#[cfg(unix)]
+pub mod conductor_bridge;
+#[cfg(unix)]
+pub mod relay;
+#[cfg(unix)]
+pub mod connection_policy;
+#[cfg(all(unix, feature = "conductor-client"))]
+pub mod conductor_client;
+#[cfg(all(unix, feature = "conductor-client"))]
+pub mod signed_call_policy;
+#[cfg(all(unix, feature = "conductor-client"))]
+pub mod signed_relay;
+#[cfg(unix)]
+pub mod relay_supervisor;
+#[cfg(all(unix, feature = "conductor-client"))]
+pub mod socket_signer;
+#[cfg(all(unix, feature = "lair-signer"))]
+pub mod lair_signer;
+#[cfg(all(unix, feature = "lair-signer"))]
+pub mod capability_exchange;
+#[cfg(all(unix, feature = "lair-signer"))]
+pub mod transport_probe;
+#[cfg(all(unix, feature = "lair-signer"))]
+pub mod probe_signer;
 use ipc::{AuthChannel, AuthFrame, ChannelContext, Role};
 use holochain_mpc_core::Envelope;
 use holochain_mpc_frost_ed25519 as frost;
@@ -56,6 +80,9 @@ pub enum Reply {
     Completed { descriptor: GroupDescriptor },
     Error { reason: String },
 }
+
+pub mod transport_channel;
+pub mod key_pinning;
 
 struct Active {
     binding: frost::Binding,
@@ -99,6 +126,7 @@ impl Controller {
         match command {
             Command::Init { binding, local } => {
                 if self.active.is_some() { return Err(invalid("already initialized")); }
+                binding.validate().map_err(|e| e.to_string())?;
                 if !binding.spec.contains(&local) { return Err(invalid("not a ceremony member")); }
                 let ceremony = Ceremony { spec: binding.spec.clone(), proposal_action: binding.proposal_action.clone() };
                 let (party, public) = frost::DkgParty::begin(binding.clone(), &local).map_err(|e| e.to_string())?;
@@ -297,6 +325,9 @@ impl AuthenticatedController {
                binding.spec.session_id != self.context.session_id {
                 return Err("initial ceremony identity is not authorised by channel context".into());
             }
+            // Refuse a non-FROST or malformed binding before the durable
+            // admission marker below and before any FROST randomness.
+            binding.validate().map_err(|e| e.to_string())?;
         } else if !self.initialized {
             return Err("authenticated Init required first".into());
         }

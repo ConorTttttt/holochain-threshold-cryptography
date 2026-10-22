@@ -2551,6 +2551,7 @@ dependencies = [
  "holo_hash",
  "holochain_wasmer_guest",
  "holochain_zome_types",
+ "mockall",
  "paste",
  "serde",
  "tracing",
@@ -2769,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "holochain-mpc-dkg-worker"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "hdk",
  "hmac 0.12.1",
@@ -2778,15 +2779,25 @@ dependencies = [
  "holochain-mpc-frost-ed25519",
  "holochain-mpc-runtime",
  "holochain-mpc-security",
+ "holochain_conductor_api",
+ "holochain_keystore",
+ "holochain_nonce",
+ "holochain_serialized_bytes",
+ "holochain_websocket",
+ "holochain_zome_types",
+ "lair_keystore_api",
  "libc",
  "mpc",
+ "mpc_integrity",
  "rand 0.8.8",
+ "rpassword",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "url2",
  "zeroize",
 ]
 

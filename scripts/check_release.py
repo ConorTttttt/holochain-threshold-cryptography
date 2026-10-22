@@ -30,7 +30,7 @@ expected = {'holochain-mpc-core', 'holochain-mpc-frost-ed25519',
 if set(packages) != expected:
     errors.append(f'wrong package inventory: {packages}')
 package = json.loads((ROOT / 'package.json').read_text())
-if package['version'] != '0.3.8':
+if package['version'] != '0.4.0':
     errors.append('package version mismatch')
 for yml in ['workdir/happ.yaml', 'dnas/mpc/workdir/dna.yaml']:
     d = yaml.safe_load((ROOT / yml).read_text())
@@ -67,7 +67,46 @@ for file in ['crates/mpc-frost-ed25519/src/lib.rs',
              'crates/mpc-dkg-worker/src/node_service.rs',
              'crates/mpc-dkg-worker/src/node_main.rs',
              'crates/mpc-dkg-worker/tests/node_service.rs',
-             'docs/V038_INDEPENDENT_NODE_SERVICE.md']:
+             'docs/V038_INDEPENDENT_NODE_SERVICE.md',
+             'crates/mpc-dkg-worker/src/conductor_bridge.rs',
+             'crates/mpc-dkg-worker/tests/conductor_bridge.rs',
+             'docs/V039_CONDUCTOR_BRIDGE.md',
+             'crates/mpc-dkg-worker/src/connection_policy.rs',
+             'crates/mpc-dkg-worker/src/conductor_client.rs',
+             'crates/mpc-dkg-worker/src/conductor_connect_main.rs',
+             'docs/V040_APP_WEBSOCKET_PREFLIGHT.md',
+             'crates/mpc-dkg-worker/src/signed_call_policy.rs',
+             'crates/mpc-dkg-worker/src/conductor_call_main.rs',
+             'docs/V040_SIGNED_ZOME_CALLS_PHASE2.md',
+             'crates/mpc-dkg-worker/src/relay.rs',
+             'crates/mpc-dkg-worker/src/signed_relay.rs',
+             'crates/mpc-dkg-worker/tests/relay_simulation.rs',
+             'docs/V040_AUTOMATIC_DKG_RELAY_PHASE3.md',
+             'crates/mpc-dkg-worker/src/relay_supervisor.rs',
+             'crates/mpc-dkg-worker/src/socket_signer.rs',
+             'crates/mpc-dkg-worker/src/relay_service_main.rs',
+             'docs/V040_RELAY_SERVICE_PHASE4.md',
+             'crates/mpc-dkg-worker/src/lair_signer.rs',
+             'crates/mpc-dkg-worker/src/lair_signer_main.rs',
+             'docs/V040_LAIR_SIGNER_PHASE5A.md',
+             'crates/mpc-dkg-worker/src/lair_live_probe_main.rs',
+             'docs/V040_LAIR_LIVE_PROBE_PHASE5B.md',
+             'crates/mpc-dkg-worker/src/phase5b_bootstrap_main.rs',
+             'scripts/phase5b_preflight.py',
+             'docs/V040_PHASE5B_BOOTSTRAP.md',
+             'crates/mpc-dkg-worker/src/capability_exchange.rs',
+             'crates/mpc-dkg-worker/src/phase5c_provision_main.rs',
+             'crates/mpc-dkg-worker/tests/capability_provisioning.rs',
+             'docs/V040_PHASE5C_B_PROVISIONING.md',
+             'crates/mpc-dkg-worker/src/transport_probe.rs',
+             'crates/mpc-dkg-worker/src/probe_signer.rs',
+             'crates/mpc-dkg-worker/src/transport_probe_main.rs',
+             'crates/mpc-dkg-worker/tests/transport_probe.rs',
+             'crates/mpc-runtime/src/probe.rs',
+             'docs/V040_PHASE5C_C_TRANSPORT_PROBE.md',
+             'docs/V040_PHASE5C_C_OFFLINE_REPORT.md',
+             'scripts/check_wasm_imports.py',
+             'scripts/phase5c_b_audit.sh']:
     if not (ROOT / file).is_file():
         errors.append(f'missing file: {file}')
 if errors:

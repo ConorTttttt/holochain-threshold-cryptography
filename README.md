@@ -1,3 +1,15 @@
+# v0.4.0 Phase 3 candidate — automatic, fail-closed DKG relay engine
+
+Adds a ceremony-scoped `RelayEngine` that polls trusted Holochain inboxes, automatically
+progresses through echo/attest/threshold-DKG phases, rejects equivocation and ambiguous
+send results, and validates signer-produced outgoing calls against the exact native
+worker envelope. The opt-in `SignedAppTransport` requests fresh signed zome calls
+from an **external** authorised signer. **No production Lair signer or persistent
+conductor relay daemon is provided; the new three-party test uses a mock network,
+not independent live conductors.** See [Phase 3 design](docs/V040_AUTOMATIC_DKG_RELAY_PHASE3.md).
+
+Run `npm run test:relay-unit` and `npm run test:relay-signed` in Holonix.
+
 # v0.3.8 Candidate — Independently launchable local MPC node services
 
 Adds `mpc-node`, a one-ceremony Unix-socket DKG service with a private state directory, independently provisioned local HMAC and encrypted-journal keys, pinned Holochain agent/proposal/session context, and process-isolation tests. **This is a local node-service foundation, NOT a conductor-connected multi-machine product**; the trusted Holochain WebSocket bridge and completed-group key persistence remain to be built. See [v0.3.8 design](docs/V038_INDEPENDENT_NODE_SERVICE.md).
@@ -175,3 +187,75 @@ real crash/partition and Byzantine tests, key possession challenges, external
 security review and trusted application-level approval UX.
 FROST provides threshold signatures, **not arbitrary MPC computation**, and
 none of these facilities solve double spending or offline settlement.
+
+
+## v0.3.9: Conductor-facing bridge test (experimental)
+
+The new `ConductorBridge` module authenticates IPC to separately provisioned
+`mpc-node` processes, checks the bound conductor cell/proposal/session, rejects
+invalid inbound/outbound envelopes, and pins all author/action encryption-key
+records obtained from the Holochain zome. A new Sweettest integration transports
+FROST DKG envelopes through three Holochain conductors and three independent
+Unix-socket services, including a full group activation attestation.
+
+Run `npm run test:bridge-unit` and `npm run test:conductor-bridge`. See
+[`docs/V039_CONDUCTOR_BRIDGE.md`](docs/V039_CONDUCTOR_BRIDGE.md) for exact trust
+boundaries. This is NOT a production conductor websocket bridge: the Sweettest
+harness still authenticates Holochain calls, retrieves zome results and
+provisions/operates the nodes. Native FROST KeyPackages do not leave workers.
+
+## v0.4.0 candidate: real app-WebSocket identity preflight (opt-in)
+
+`mpc-conductor-connect` uses a pinned loopback Holochain app WebSocket, a
+pre-issued private authentication token and strict app/agent/DNA checks. This
+is a **read-only identity preflight** for future native node integration, not
+yet a standalone conductor zome-call relay. See
+[`docs/V040_APP_WEBSOCKET_PREFLIGHT.md`](docs/V040_APP_WEBSOCKET_PREFLIGHT.md).
+
+```sh
+npm run test:conductor-pin
+npm run test:conductor-client
+npm run build:conductor-connect
+```
+
+Existing DKG/Sweettest commands are preserved.
+
+
+## v0.4.0 Phase 2 (candidate): signed MPC zome call bridge
+
+An opt-in `conductor-client` feature now permits submission of externally
+signed, strictly allowlisted calls for the pinned MPC cell. The local bridge
+never holds the Holochain agent signing key. This is **not** automatic relay
+or complete independent conductor deployment. See
+[`docs/V040_SIGNED_ZOME_CALLS_PHASE2.md`](docs/V040_SIGNED_ZOME_CALLS_PHASE2.md).
+
+### v0.4.0 Phase 4 candidate: Standalone relay service
+
+`mpc-relay-service` now supervises the Phase 3 DKG engine with bounded polling and shutdown handling, using an **external Unix socket signer** for fresh signed Holochain calls. Each worker registers its own public DKG encryption key before broadcasting. **No signer server or Lair integration is provided**, and live end-to-end signed-app-interface integration remains unverified. See [`docs/V040_RELAY_SERVICE_PHASE4.md`](docs/V040_RELAY_SERVICE_PHASE4.md).
+
+
+### v0.4.0 Phase 5A — Lair-backed signer (experimental)
+
+The optional `mpc-lair-signer` binary implements the existing Phase 4 signer
+protocol with a pinned policy and pre-provisioned Lair agent key. It uses a
+private Unix socket, fresh Holochain nonces and per-recipient capabilities.
+See [Phase 5A instructions](docs/V040_LAIR_SIGNER_PHASE5A.md). Live Lair/
+conductor interoperability and independent three-node DKG are **not yet
+verified**; do not use valuable keys.
+
+
+### v0.4.0 Phase 5C-C — isolated transport probe (offline development)
+
+A dedicated `mpc-transport-probe` v1 proposal and explicit probe signer profile
+connect retained native X25519 identities to the existing signed transport.
+Outbound attempts and authenticated recipient replay markers survive restart;
+uncertain sends cannot be retried. Existing FROST policies and zomes are
+preserved. No persistent-network delivery is claimed. See
+[design and proposed operator procedure](docs/V040_PHASE5C_C_TRANSPORT_PROBE.md)
+and [offline evidence](docs/V040_PHASE5C_C_OFFLINE_REPORT.md).
+
+
+Phase 5C-C deployment readiness: **NO-GO for live writes**, pending the
+[security review findings](docs/V040_PHASE5C_C_SECURITY_REVIEW.md).
+A [read-only public preflight checklist](docs/V040_PHASE5C_C_READ_ONLY_PREFLIGHT.md)
+is prepared separately; it is not deployment authorization.

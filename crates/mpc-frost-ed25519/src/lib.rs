@@ -74,27 +74,51 @@ impl From<serde_json::Error> for ProviderError {
 /// The proposal's *action hash*, unlike its app-level session id, is unique to
 /// the Holochain-DNA instance and prevents reuse across recreated proposals.
 /// The host MUST verify this exact action hash against the accepted session.
+///
+/// Deserialization runs the same checks as `new`. Fields stay public for
+/// reading, so a struct literal can still bypass `new`: every entry point that
+/// generates FROST randomness or admits a DKG calls `validate` again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "BindingWire")]
 pub struct Binding {
     pub proposal_action: Vec<u8>,
     pub spec: SessionSpec,
 }
+#[derive(Deserialize)]
+struct BindingWire {
+    proposal_action: Vec<u8>,
+    spec: SessionSpec,
+}
+impl TryFrom<BindingWire> for Binding {
+    type Error = ProviderError;
+    fn try_from(wire: BindingWire) -> Result<Self, ProviderError> {
+        Self::new(wire.proposal_action, wire.spec)
+    }
+}
 impl Binding {
     pub fn new(proposal_action: Vec<u8>, spec: SessionSpec) -> Result<Self, ProviderError> {
-        spec.validate()?;
-        if spec.protocol_id != PROTOCOL_ID || spec.protocol_version != PROTOCOL_VERSION {
+        let binding = Self { proposal_action, spec };
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    /// Reject any spec this provider does not run: other protocols (such as
+    /// the transport probe), other versions, sub-2 thresholds, short sessions.
+    pub fn validate(&self) -> Result<(), ProviderError> {
+        self.spec.validate()?;
+        if self.spec.protocol_id != PROTOCOL_ID || self.spec.protocol_version != PROTOCOL_VERSION {
             return Err(ProviderError::Invalid("expected frost-ed25519 v1"));
         }
-        if spec.threshold < 2 || spec.participants.len() < 2 {
+        if self.spec.threshold < 2 || self.spec.participants.len() < 2 {
             return Err(ProviderError::Invalid("FROST needs at least two participants"));
         }
-        if spec.max_round < 6 {
+        if self.spec.max_round < 6 {
             return Err(ProviderError::Invalid("the Holochain session must allow rounds 1..6"));
         }
-        if proposal_action.len() != 39 {
+        if self.proposal_action.len() != 39 {
             return Err(ProviderError::Invalid("expected 39-byte Holochain proposal action hash"));
         }
-        Ok(Self { proposal_action, spec })
+        Ok(())
     }
 
     /// Map sorted Holochain identities to stable FROST ids 1..N. Do not let
@@ -318,6 +342,7 @@ pub struct DkgParty {
 }
 impl DkgParty {
     pub fn begin(binding: Binding, own_agent: &[u8]) -> Result<(Self, RoundOne), ProviderError> {
+        binding.validate()?;
         let id = binding.id_of(own_agent)?;
         let mut rng = OsRng;
         let (secret, public) = frost::keys::dkg::part1(
@@ -425,6 +450,7 @@ struct PendingNonce {
 }
 impl Signer {
     pub fn new(binding: Binding, own_agent: &[u8], key: KeyPackage) -> Result<Self, ProviderError> {
+        binding.validate()?;
         if key.identifier() != &binding.id_of(own_agent)? ||
             *key.min_signers() != binding.spec.threshold {
             return Err(ProviderError::Invalid("key package identifier/threshold mismatch"));
@@ -627,6 +653,7 @@ pub struct AuthenticatedShareCollector {
 }
 impl AuthenticatedShareCollector {
     pub fn new(binding: Binding, package: &SigningPackage) -> Result<Self,ProviderError> {
+        binding.validate()?;
         let expected_package_digest=commitment("frost-signing-package-v1",&serde_json::to_vec(package)?);
         Ok(Self { binding,expected_package_digest,received:BTreeMap::new() })
     }

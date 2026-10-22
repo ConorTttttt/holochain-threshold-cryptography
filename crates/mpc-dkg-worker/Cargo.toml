@@ -1,6 +1,6 @@
 [package]
 name = "holochain-mpc-dkg-worker"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "Apache-2.0"
 description = "Experimental process-isolated FROST DKG controller for Holochain MPC"
@@ -13,6 +13,46 @@ path = "src/main.rs"
 name = "mpc-node"
 path = "src/node_main.rs"
 
+[[bin]]
+name = "mpc-conductor-call"
+path = "src/conductor_call_main.rs"
+required-features = ["conductor-client"]
+
+[[bin]]
+name = "mpc-lair-live-probe"
+path = "src/lair_live_probe_main.rs"
+required-features = ["conductor-client"]
+
+[[bin]]
+name = "mpc-lair-signer"
+path = "src/lair_signer_main.rs"
+required-features = ["lair-signer"]
+
+[[bin]]
+name = "mpc-phase5b-bootstrap"
+path = "src/phase5b_bootstrap_main.rs"
+required-features = ["lair-signer"]
+
+[[bin]]
+name = "mpc-phase5c-provision"
+path = "src/phase5c_provision_main.rs"
+required-features = ["lair-signer"]
+
+[[bin]]
+name = "mpc-relay-service"
+path = "src/relay_service_main.rs"
+required-features = ["conductor-client"]
+
+[[bin]]
+name = "mpc-conductor-connect"
+path = "src/conductor_connect_main.rs"
+required-features = ["conductor-client"]
+
+[[test]]
+name = "capability_provisioning"
+path = "tests/capability_provisioning.rs"
+required-features = ["lair-signer"]
+
 [dependencies]
 holochain-mpc-core = { path = "../mpc-core" }
 holochain-mpc-security = { path = "../mpc-security" }
@@ -24,12 +64,42 @@ hmac = "0.12.1"
 sha2 = "0.10.9"
 zeroize = "1.8"
 libc = "0.2"
+# Use exact versions from the existing Holochain 0.7.1 conductor family.
+# Do not use holochain_client 0.8.x: it targets Holochain 0.6.x.
+holochain_websocket = { version = "=0.7.1", optional = true }
+holochain_conductor_api = { version = "=0.7.1", optional = true }
+holochain_zome_types = { version = "=0.7.1", optional = true }
+holochain_serialized_bytes = { workspace = true, optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "signal"] }
+holochain_nonce = { version = "=0.7.1", optional = true }
+holochain_keystore = { version = "=0.7.1", optional = true }
+lair_keystore_api = { version = "=0.7.1", optional = true }
+url2 = { version = "0.0.6", optional = true }
+rpassword = { version = "7", optional = true }
+rand = { version = "0.8.5", optional = true }
+
+[features]
+default = []
+conductor-client = ["dep:holochain_websocket", "dep:holochain_conductor_api", "dep:holochain_zome_types", "dep:holochain_serialized_bytes"]
+lair-signer = ["conductor-client", "dep:holochain_nonce", "dep:holochain_keystore", "dep:lair_keystore_api", "dep:url2", "dep:rpassword", "dep:rand"]
 
 [dev-dependencies]
+holochain_nonce = "=0.7.1"
 rand = "0.8.5"
 tempfile = "3"
 rusqlite = { version = "0.37", features = ["bundled"] }
-hdk = { workspace = true }
+hdk = { workspace = true, features = ["mock"] }
 holochain = { version = "=0.7.1", default-features = false, features = ["wasmer-sys-cranelift", "test_utils", "encryption"] }
 tokio = { version = "1", features = ["full"] }
 mpc = { path = "../../dnas/mpc/zomes/coordinator/mpc" }
+mpc_integrity = { path = "../../dnas/mpc/zomes/integrity/mpc_integrity" }
+
+[[bin]]
+name = "mpc-transport-probe"
+path = "src/transport_probe_main.rs"
+required-features = ["lair-signer"]
+
+[[test]]
+name = "transport_probe"
+path = "tests/transport_probe.rs"
+required-features = ["lair-signer"]

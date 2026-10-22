@@ -16,6 +16,8 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use std::{fmt, path::Path};
 use zeroize::{Zeroize, Zeroizing};
 pub mod dkg;
+pub mod transport_key;
+pub mod probe;
 
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -100,6 +102,13 @@ impl RuntimeStore {
               proposal BLOB NOT NULL, epoch INTEGER NOT NULL,
               certificate_digest BLOB NOT NULL,
               PRIMARY KEY(proposal, epoch)
+            );
+            CREATE TABLE IF NOT EXISTS transport_keys (
+              proposal BLOB NOT NULL, agent BLOB NOT NULL,
+              dna BLOB NOT NULL, session BLOB NOT NULL,
+              version INTEGER NOT NULL, nonce BLOB NOT NULL,
+              ciphertext BLOB NOT NULL,
+              PRIMARY KEY (proposal, agent)
             );")?;
         Ok(Self { connection: conn, key })
     }

@@ -7,7 +7,8 @@
 //! Lair or an OS keyring and must be considered development-only material.
 use crate::ipc::{AuthFrame, ChannelContext};
 use crate::{AuthenticatedController, Command};
-use holochain_mpc_runtime::MasterKey;
+use crate::transport_channel::DurableTransportChannel;
+use holochain_mpc_runtime::{transport_key::TransportKeyBinding, MasterKey, RuntimeStore};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -21,6 +22,7 @@ const CONFIG: &str = "node.json";
 const IPC_KEY: &str = "ipc.key";
 const STATE_KEY: &str = "storage.key";
 const DATABASE: &str = "journal.sqlite";
+const TRANSPORT_DATABASE: &str = "transport.sqlite";
 const SOCKET: &str = "controller.sock";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,6 +94,87 @@ fn read_config(dir: &Path) -> io::Result<NodeConfig> {
     if config.schema != 1 { return Err(invalid("unsupported node configuration schema")); }
     config.context.validate().map_err(|_| invalid("invalid pinned node context"))?;
     Ok(config)
+}
+
+/// Transport encryption custody is distinct from non-resumable FROST DKG.
+/// The trusted caller must independently pin `dna` against the authenticated
+/// conductor cell: node.json pins agent/proposal/session, but not the DNA.
+///
+/// Creation is explicit and exclusive, never replacing a partial/old DB.
+/// `transport.sqlite` is separate from the FROST `journal.sqlite` and uses
+/// the existing development-only storage.key (not hardware-backed).
+/// Recovery NEVER generates or replaces a key. Neither path begins DKG.
+pub fn transport_public_key(state_dir: &Path, dna: [u8; 39], create: bool)
+    -> io::Result<[u8; 32]>
+{
+    Ok(open_transport_channel(state_dir, dna, create)?.2.public_key())
+}
+
+/// Native-only custody helper. No secret bytes cross the signer or conductor
+/// interfaces. Recovery can perform SQLite housekeeping; it is not read-only.
+pub(crate) fn open_transport_channel(state_dir: &Path, dna: [u8;39], create: bool)
+    -> io::Result<(RuntimeStore, TransportKeyBinding, DurableTransportChannel)>
+{
+    let config = read_config(state_dir)?;
+    if dna == [0; 39] { return Err(invalid("zero DNA identity")); }
+    let agent: [u8; 39] = config.context.worker_agent.as_slice().try_into()
+        .map_err(|_| invalid("invalid pinned agent"))?;
+    let proposal: [u8; 39] = config.context.proposal_action.as_slice().try_into()
+        .map_err(|_| invalid("invalid pinned proposal"))?;
+    let binding = TransportKeyBinding {
+        dna, agent, proposal, session: config.context.session_id,
+    };
+    let master = read_key(&state_dir.join(STATE_KEY))?;
+    let database = state_dir.join(TRANSPORT_DATABASE);
+
+    if create {
+        // This prevents accidental or racing reinitialisation, including
+        // reusing an aborted/partially written transport DB.
+        let file = OpenOptions::new().write(true).create_new(true).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW).open(&database)?;
+        file.sync_all()?;
+        drop(file);
+        File::open(state_dir)?.sync_all()?;
+    } else {
+        // No implicit recovery-time DB creation, symlink or hard-link follow.
+        let _ = private_file(&database)?;
+    }
+    let mut store = RuntimeStore::open(&database, MasterKey::from_bytes(*master))
+        .map_err(|_| invalid("transport database unavailable or invalid"))?;
+    let channel = if create {
+        DurableTransportChannel::provision_new(&mut store, &binding)
+    } else {
+        DurableTransportChannel::recover(&store, &binding)
+    }.map_err(|_| invalid("transport key creation/recovery refused"))?;
+    Ok((store, binding, channel))
+}
+
+#[cfg(test)]
+mod transport_key_node_tests {
+    use super::*;
+    use std::{process, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn transport_key_node_isolated_from_dkg_and_recovers() {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mpc-transport-node-{}-{stamp}", process::id()));
+        let context = ChannelContext { worker_agent: vec![11; 39],
+            proposal_action: vec![12; 39], session_id: [13; 32], channel_id: [14; 32] };
+        provision(&dir, context).unwrap();
+        let db = dir.join(TRANSPORT_DATABASE);
+        let dkg = dir.join(DATABASE);
+        assert!(transport_public_key(&dir, [15; 39], false).is_err());
+        assert!(!db.exists());
+        let original = transport_public_key(&dir, [15; 39], true).unwrap();
+        assert_ne!(original, [0; 32]);
+        assert_eq!(fs::metadata(&db).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(transport_public_key(&dir, [15; 39], true).is_err());
+        assert!(transport_public_key(&dir, [16; 39], false).is_err());
+        assert_eq!(transport_public_key(&dir, [15; 39], false).unwrap(), original);
+        assert!(!dkg.exists(), "transport operations must not open the DKG journal");
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 /// Provision one ceremony. All paths and key files are created exclusively.
@@ -175,6 +258,20 @@ fn serve_connection(controller: &mut AuthenticatedController, mut stream: UnixSt
         stream.write_all(b"\n")?;
         stream.flush()?;
     }
+}
+
+/// Load private per-node bridge credentials only from the securely permissioned
+/// state directory. The returned key is zeroized on drop. The conductor-facing
+/// process MUST itself verify the cell identity and session before connecting.
+pub(crate) fn bridge_credentials(dir: &Path) -> io::Result<(ChannelContext, Zeroizing<[u8;32]>)> {
+    let config = read_config(dir)?;
+    let key = read_key(&dir.join(IPC_KEY))?;
+    Ok((config.context, key))
+}
+
+/// Read only public, owner-controlled node identity without exporting keys.
+pub fn pinned_context(dir: &Path) -> io::Result<ChannelContext> {
+    Ok(read_config(dir)?.context)
 }
 
 pub fn config_path(dir: &Path) -> PathBuf { dir.join(CONFIG) }

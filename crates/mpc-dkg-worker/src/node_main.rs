@@ -1,6 +1,6 @@
 //! Separate experimental local MPC service: one process per node per DKG proposal.
 use holochain_mpc_dkg_worker::ipc::ChannelContext;
-use holochain_mpc_dkg_worker::node_service::{decode_hex_exact, provision, serve};
+use holochain_mpc_dkg_worker::node_service::{decode_hex_exact, provision, serve, transport_public_key};
 use std::path::PathBuf;
 use std::fs::File;
 use std::io::Read;
@@ -25,7 +25,28 @@ fn run() -> Result<(), String> {
         Some("serve") if args.len() == 3 => {
             serve(&PathBuf::from(&args[2])).map_err(|e| e.to_string())
         }
-        _ => Err("usage: mpc-node provision <absolute-empty-dir> <agent-hex-39B> <proposal-hex-39B> <session-hex-32B> | mpc-node serve <absolute-dir>".into()),
+        // Independent of FROST DKG. Creates transport.sqlite exclusively, not
+        // journal.sqlite. Never start the non-resumable worker for this action.
+        Some("transport-key-create") if args.len() == 5 &&
+            args[4] == "--confirm-local-key-write" => {
+            let dna = decode_hex_exact::<39>(&args[3]).map_err(|e| e.to_string())?;
+            let public = transport_public_key(&PathBuf::from(&args[2]), dna, true)
+                .map_err(|e| e.to_string())?;
+            let public_hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+            println!("PASS: durable transport key created; public_key_hex={public_hex}");
+            Ok(())
+        }
+        // Recovery does NOT generate a replacement. SQLite may perform
+        // internal WAL/schema housekeeping; it never starts FROST DKG.
+        Some("transport-key-public") if args.len() == 4 => {
+            let dna = decode_hex_exact::<39>(&args[3]).map_err(|e| e.to_string())?;
+            let public = transport_public_key(&PathBuf::from(&args[2]), dna, false)
+                .map_err(|e| e.to_string())?;
+            let public_hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+            println!("PASS: durable transport key recovered; public_key_hex={public_hex}");
+            Ok(())
+        }
+        _ => Err("usage: mpc-node provision <absolute-empty-dir> <agent-hex-39B> <proposal-hex-39B> <session-hex-32B> | mpc-node serve <absolute-dir> | mpc-node transport-key-create <absolute-node-dir> <dna-hex-39B> --confirm-local-key-write | mpc-node transport-key-public <absolute-node-dir> <dna-hex-39B>".into()),
     }
 }
 fn main() {

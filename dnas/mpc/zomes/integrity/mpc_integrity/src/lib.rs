@@ -292,6 +292,50 @@ fn validate_link(action: TypedAction<CreateLinkData>, kind: LinkTypes) -> Extern
     }
 }
 
+// Capability-grant revocation creates BOTH a CreateRecord::DeleteEntry op
+// and a Delete op. They MUST share the same rule. MPC application entries,
+// claims, agent keys, and links remain immutable under this DNA policy.
+//
+// Only the action is fetched: CapGrant entry contents are private to the
+// grantor's source chain, and retrieving their plaintext is unnecessary.
+fn is_grant_entry_type(entry_type: &EntryType) -> bool {
+    matches!(entry_type, EntryType::CapGrant)
+}
+
+fn validate_grant_revocation(
+    deletion: &TypedAction<DeleteData>,
+) -> ExternResult<ValidateCallbackResult> {
+    let original = must_get_action(deletion.deletes_address.clone())?;
+    let original_action = &original.hashed.content;
+
+    // A grantor may revoke their own grant, never someone else's.
+    if original_action.author() != deletion.author() {
+        return invalid("Only the original grant author can revoke a capability grant");
+    }
+
+    // Delete of Update, CapClaim, AgentPubKey and every App entry is denied.
+    // We intentionally do not accept a CapGrant UPDATE as the target: the
+    // issued grant_hash refers to the original Create action.
+    match &original_action.data {
+        ActionData::Create(create) if is_grant_entry_type(&create.entry_type) => {
+            Ok(ValidateCallbackResult::Valid)
+        }
+        _ => invalid("Only locally authored CapGrant creation actions can be deleted"),
+    }
+}
+
+#[cfg(test)]
+mod grant_revocation_type_tests {
+    use super::*;
+
+    #[test]
+    fn only_capability_grant_entry_types_are_revocable() {
+        assert!(is_grant_entry_type(&EntryType::CapGrant));
+        assert!(!is_grant_entry_type(&EntryType::CapClaim));
+        assert!(!is_grant_entry_type(&EntryType::AgentPubKey));
+    }
+}
+
 #[hdk_extern]
 pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
     match op.flattened::<EntryTypes, LinkTypes>()? {
@@ -302,7 +346,8 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
         },
         FlatOp::CreateRecord(op) => match op {
             OpRecord::CreateEntry { app_entry, action } => validate_entry(app_entry, action.author()),
-            OpRecord::UpdateEntry { .. } | OpRecord::DeleteEntry { .. } => invalid("MPC records are append-only"),
+            OpRecord::UpdateEntry { .. } => invalid("MPC records are append-only"),
+            OpRecord::DeleteEntry { action, .. } => validate_grant_revocation(&action),
             OpRecord::CreateLink { link_type, action } => validate_link(action, link_type),
             OpRecord::DeleteLink { .. } => invalid("MPC index links are append-only"),
             _ => Ok(ValidateCallbackResult::Valid),
@@ -312,14 +357,7 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
             // Capability grant and claim updates remain permitted.
             _ => Ok(ValidateCallbackResult::Valid),
         },
-        FlatOp::Delete(OpDelete { action }) => {
-            let original = must_get_valid_record(action.deletes_address.clone())?;
-            // Do not interfere with revocation of a private CapGrant or CapClaim.
-            match original.action().entry_type() {
-                Some(EntryType::App(_)) => invalid("MPC app entries are append-only"),
-                _ => Ok(ValidateCallbackResult::Valid),
-            }
-        },
+        FlatOp::Delete(OpDelete { action }) => validate_grant_revocation(&action),
         FlatOp::Link(OpLink::CreateLink { link_type, action }) => validate_link(action, link_type),
         FlatOp::Link(OpLink::DeleteLink { .. }) => invalid("MPC links cannot be deleted"),
         _ => Ok(ValidateCallbackResult::Valid),
