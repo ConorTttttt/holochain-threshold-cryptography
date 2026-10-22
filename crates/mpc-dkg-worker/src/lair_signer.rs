@@ -148,10 +148,13 @@ impl SignerPolicy {
                 if req.public_key.is_some() {return Err("send request contains public key".into());}
                 let env=req.envelope.as_ref().ok_or("missing worker envelope")?;
                 let recipient=env.recipient.as_ref().ok_or("outbound envelope has no recipient")?;
+                // DKG rounds only (1 announce, 2 attest, 3 sealed share).
+                // Signing rounds 4..6 belong to the separate signing profile,
+                // which checks them against one operator-approved plan.
                 if env.sender!=self.binding.agent || env.session_id!=self.binding.session_id ||
                     recipient==&self.binding.agent || env.protocol_id!="frost-ed25519" ||
                     env.protocol_version!=1 || env.wire_version!=1 ||
-                    env.round==0 || env.round>6 || env.sequence==u64::MAX ||
+                    env.round==0 || env.round>3 || env.sequence==u64::MAX ||
                     env.payload.len()==0 || env.payload.len()>128*1024 ||
                     env.payload_hash!=holochain_mpc_core::commitment("envelope-payload",&env.payload) {
                     return Err("outbound envelope violates signer ceremony bounds".into());
@@ -400,6 +403,20 @@ mod tests {
                 _=>e.payload_hash=[0;32],
             }
             assert!(p.authorize(&bad).is_err(),"altered envelope {change} was authorised");
+        }
+    }
+    // Security review 2026-10-22 R2: the DKG-time signer never signs a
+    // signing-round frame; only the plan-pinned signing profile may.
+    #[test]
+    fn dkg_profile_refuses_signing_rounds() {
+        let p=pinned();
+        for round in [1,2] {
+            let mut r=req("send_protocol_message");r.envelope=Some(env_to(peer(),round,b"hi"));
+            assert!(p.authorize(&r).is_ok(),"DKG round {round}");
+        }
+        for round in [4,5,6] {
+            let mut r=req("send_protocol_message");r.envelope=Some(env_to(peer(),round,b"hi"));
+            assert!(p.authorize(&r).is_err(),"signing round {round} must be refused by the DKG profile");
         }
     }
 }

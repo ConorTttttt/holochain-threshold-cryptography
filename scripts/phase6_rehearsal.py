@@ -229,8 +229,18 @@ def phase8(run: "Run", prov: Path, app, ops: list, agents: list, app_ports: list
             time.sleep(5)
         else:
             fail(f"{NODES[i]} never saw the full group activation")
+        # Each operator approves against their own copy of the message.
+        own = ops[i] / "message.txt"
+        shutil.copyfile(message, own)
+        tampered = ops[i] / "tampered-plan.json"
+        tampered.write_text(plan.read_text().replace('"message":[', '"message":[33,', 1))
+        bad = Proc(f"approve-tampered-{i+1}", [str(a) for a in [prov, "approve-intent", *app(i), "--record",
+                   ops[i] / "ceremony.json", "--plan", tampered, "--message-file", own,
+                   "--confirm-approval-write"]], run)
+        if bad.wait(60) == 0 or "differs from your --message-file" not in bad.text():
+            fail("approve-intent did not refuse a plan whose message was altered")
         run.step(f"approve-{i+1}", [prov, "approve-intent", *app(i), "--record", ops[i] / "ceremony.json",
-                 "--plan", plan, "--confirm-approval-write"])
+                 "--plan", plan, "--message-file", own, "--confirm-approval-write"])
     services = []
     for i in signers:
         node_plan = ops[i] / "plan.json"

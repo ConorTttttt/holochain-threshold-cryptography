@@ -24,6 +24,11 @@ In the disposable three-conductor rehearsal (`scripts/phase6_rehearsal.py`,
 5. **OpenSSL 3.5 verified it as a standard RFC 8032 Ed25519 signature**
    under the group key, and rejected it over a tampered message.
 
+After the 22 October security review
+(`V040_SECURITY_REVIEW_2026-10-22.md`), a third run passed with the hardened
+approval step. Each operator's approval of a plan whose message had been
+altered was refused before Lair unlocked.
+
 Each signer's journal records exactly one burned (`published`) nonce. The
 unselected node reserved none. A second run of the same operation was refused
 ("deadline already registered"). The unselected member could not obtain a
@@ -41,12 +46,20 @@ signing approvals and result commitments.
    durably completed exactly that descriptor. The group is active only when
    every member has attested the same descriptor.
 2. **Plan** (`make-intent`, local). A public `SigningPlan` holds the
-   descriptor, a random 32-byte operation id, the message and the sorted
-   selected signers. The same file goes to every selected operator.
+   descriptor, a random 32-byte operation id, the message (at most 8 KiB) and
+   the sorted selected signers. It is written as compact JSON, and a plan
+   validates only if that encoding is at most 48 KiB, so every plan reader and
+   the signing policy that embeds it can load it. The same file goes to every
+   selected operator.
 3. **Approve** (`approve-intent`, write, `--confirm-approval-write`). Allowed
    only after full activation, and only by a selected signer, once per
-   operation. It publishes the `SigningIntent` digest. The automated signer
-   can never approve.
+   operation. The operator must pass `--message-file`: their own copy of
+   the exact message, obtained independently of the plan file. Approval is
+   refused unless the plan carries exactly those bytes. This check runs
+   before Lair is unlocked or the conductor is called. The tool prints the
+   operation id, the message's plain SHA-256 (compare with `sha256sum`), an
+   escaped preview and the signer roster. Only then does it publish the
+   `SigningIntent` digest. The automated signer can never approve.
 4. **Sign** (`mpc-sign`, behind `mpc-lair-signer --signing-profile`).
    1. Reopen the sealed share (Phase 7).
    2. Wait for full activation and every selected approval.
@@ -62,6 +75,10 @@ signing approvals and result commitments.
 
    Frames carry the operation id. The inbox slot (round, sequence) is derived
    from the operation id. Senders are the conductor-authenticated provenance.
+   Frames from members outside the selected roster are ignored, not fatal,
+   so a non-selected member cannot veto the operation. A run that fails
+   after registering its deadline records the abort in the journal and
+   burns the nonce slot.
 
 ## Signing signer profile (`mpc-frost-signing-v1`)
 
@@ -77,12 +94,14 @@ signing approvals and result commitments.
 - It refuses approvals, activation, key registration, provisioning and every
   other call. The DKG-time FROST policy and the probe policy are not accepted
   in this mode, and the reverse also holds.
+- The DKG-time FROST profile signs only DKG rounds 1–3. Signing-round frames
+  (4–6) are signed only by this plan-pinned profile.
 
 ## Tests
 
 | Suite | Covers |
 |---|---|
-| `tests/signing_session.rs` (`npm run test:signing-session`, part of `test:native`), 4 tests | Two sessions over recovered shares produce one byte-identical verified signature, and a repeat is refused. There is no signature without every selected approval. An outsider cannot sign. A conflicting approval or activation fails closed. Tampered shares never aggregate |
+| `tests/signing_session.rs` (`npm run test:signing-session`, part of `test:native`), 8 tests | Two sessions over recovered shares produce one byte-identical verified signature, and a repeat is refused. There is no signature without every selected approval. An outsider cannot sign. A conflicting approval or activation fails closed. Tampered shares never aggregate. From the 22 Oct security review: approval is refused for a substituted message and the review escapes control bytes; a non-selected member's frames are ignored; a failed run journals its abort; every plan that validates fits the 64 KiB readers |
 | `signing_signer::tests` (`npm run test:signing-signer`), 2 tests | Allowed reads. Refused approval, activation and registration calls. Only this operation's frames to selected peers are signed. Forged results are refused. Wrong profile, roster or capabilities are rejected |
 | Rehearsal (`npm run rehearse:three-nodes`) | Live, as above |
 

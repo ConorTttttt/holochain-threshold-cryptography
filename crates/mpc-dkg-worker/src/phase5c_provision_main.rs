@@ -10,6 +10,8 @@
 //!   `revoke-grant`  — delete one session grant     --confirm-grant-revoke
 //!   `activate-group`— one group activation attestation   --confirm-activation-write
 //!   `approve-intent`— one approval of one signing plan    --confirm-approval-write
+//!                     (refused unless `--message-file`, the operator's own
+//!                     copy, equals the plan's message byte for byte)
 //! Phase 8 local only: `make-intent` (public signing plan), `write-signing-policy`
 //! (0600 signing-profile signer policy); read-only: `signing-status`.
 //!
@@ -31,7 +33,8 @@ use holochain_mpc_dkg_worker::capability_exchange::{
 use holochain_mpc_dkg_worker::conductor_client::read_app_token;
 use holochain_mpc_dkg_worker::lair_signer::{connect_lair_interactive, lair_url_from_root};
 use holochain_mpc_dkg_worker::node_service::{pinned_context, read_descriptor, recover_share};
-use holochain_mpc_dkg_worker::signing::{activated_group, ActivationEvidence, ApprovalEvidence, SigningPlan, PLAN_SCHEMA};
+use holochain_mpc_dkg_worker::signing::{activated_group, approval_review, ActivationEvidence, ApprovalEvidence,
+    SigningPlan, PLAN_SCHEMA};
 use holochain_mpc_dkg_worker::signing_signer::{SigningSignerPolicy, PROFILE as SIGNING_PROFILE};
 use holochain_mpc_dkg_worker::socket_signer::SignerBinding;
 use holochain_nonce::Nonce256Bits;
@@ -612,23 +615,29 @@ fn make_intent(args: &[String]) -> Result<(), String> {
     let mut operation_id = [0_u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut operation_id);
     let plan = SigningPlan { schema: PLAN_SCHEMA, descriptor, operation_id, message, selected };
-    plan.validate()?;
-    write_private_new(&f.path("--out")?, &serde_json::to_vec_pretty(&plan).map_err(|_| "encode plan")?)?;
-    println!("PASS: signing plan written (public); review it, then give the same file to every selected operator");
-    println!("operation_id={}", hex(&plan.operation_id));
-    println!("message_sha256_commitment={} bytes={}", hex(&holochain_mpc_core::commitment("signing-intent-message", &plan.message)), plan.message.len());
+    let review = approval_review(&plan, &plan.message)?;
+    // Compact JSON: `validate` bounds this encoding, so every reader can load it.
+    write_private_new(&f.path("--out")?, &serde_json::to_vec(&plan).map_err(|_| "encode plan")?)?;
+    println!("PASS: signing plan written (public); give the same file to every selected operator.");
+    println!("Each operator approves only with their own copy of the message (--message-file).");
+    println!("{review}");
     for s in &plan.selected { println!("selected {}", agent_b64(s)); }
     Ok(())
 }
 
-/// Approve one exact plan, once, after the group is fully activated.
+/// Approve one exact plan, once, after the group is fully activated. The
+/// operator's own `--message-file` must equal the plan's message byte for
+/// byte; this is checked before Lair is unlocked or the conductor is called.
 async fn approve_intent(args: &[String]) -> Result<(), String> {
-    let f = Flags::parse(args, &with(&["--record", "--plan"]), Some("--confirm-approval-write"))?;
+    let f = Flags::parse(args, &with(&["--record", "--plan", "--message-file"]), Some("--confirm-approval-write"))?;
     let record = load_record(&f.path("--record")?)?;
     let local = decode_agent(f.get("--agent-b64"))?;
     record.peers_of(&local)?;
     let plan = load_plan(&f.path("--plan")?, &record)?;
     if !plan.selected.contains(&local) { return Err("this agent is not a selected signer of the plan".into()); }
+    let review = approval_review(&plan, &read_owned(&f.path("--message-file")?, false)?)?;
+    println!("{review}");
+    for s in &plan.selected { println!("selected {}", agent_b64(s)); }
     let app = App::open(&f, &record.installed_app_id, &record.dna_hash, &local, lair(&f).await?).await?;
     let active = activated_group(&plan.descriptor, &app.activations(&record).await?)?
         .ok_or("group is not fully activated yet: every member must attest first")?;
@@ -636,8 +645,6 @@ async fn approve_intent(args: &[String]) -> Result<(), String> {
         return Err("this agent already approved this operation; refusing another write".into());
     }
     let intent_hash = plan.intent(&active)?.digest().map_err(|e| e.to_string())?;
-    println!("approving operation_id={} message_bytes={} signers={}", hex(&plan.operation_id), plan.message.len(),
-        plan.selected.iter().map(|s| agent_b64(s)).collect::<Vec<_>>().join(","));
     let proposal = ActionHash::try_from_raw_39(record.proposal_action.clone()).map_err(|_| "bad proposal")?;
     let _: ActionHash = app.call("publish_signing_approval", ExternIO::encode(PublishSigningApproval {
         proposal, operation_id: plan.operation_id, group_descriptor_hash: active.digest(), intent_hash })
@@ -667,9 +674,11 @@ fn write_signing_policy(args: &[String]) -> Result<(), String> {
     let binding = SignerBinding { installed_app_id: record.installed_app_id.clone(), role: "mpc".into(),
         dna_hash: record.dna_hash.clone(), agent: node.worker_agent.clone(),
         proposal_action: node.proposal_action.clone(), session_id: node.session_id, channel_id: node.channel_id };
-    let json = Zeroizing::new(serde_json::to_vec_pretty(&serde_json::json!({
+    let json = Zeroizing::new(serde_json::to_vec(&serde_json::json!({
         "profile": SIGNING_PROFILE, "binding": binding, "plan": plan, "recipients": recipients }))
         .map_err(|_| "cannot encode policy")?);
+    // The signer reads at most 64 KiB; never write a policy it would refuse.
+    if json.len() as u64 > MAX_FILE { return Err("signing policy exceeds the signer's 64 KiB limit".into()); }
     SigningSignerPolicy::new(serde_json::from_slice(&json).map_err(|_| "policy does not round-trip")?)?;
     write_private_new(&f.path("--out")?, &json)?;
     println!("PASS: signing-profile signer policy written for operation {} (secrets not shown)", hex(&plan.operation_id));

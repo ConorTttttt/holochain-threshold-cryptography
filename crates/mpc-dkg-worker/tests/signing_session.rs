@@ -284,6 +284,81 @@ async fn conflicting_approval_or_activation_fails_closed() {
     assert!(activated_group(&f.descriptor, &forged).unwrap().is_none(), "partial activation waits");
 }
 
+// Security review 2026-10-22 R1: approval binds to the operator's own copy
+// of the message, never to whatever a public plan file carries.
+#[tokio::test]
+async fn approval_review_binds_the_operators_own_message() {
+    use holochain_mpc_dkg_worker::signing::approval_review;
+    use sha2::Digest;
+    let f = fixture().await;
+    let mut plan = f.plan(5, &[1, 2]);
+    let intended = plan.message.clone();
+    let review = approval_review(&plan, &intended).unwrap();
+    let sha: String = sha2::Sha256::digest(&intended).iter().map(|b| format!("{b:02x}")).collect();
+    assert!(review.contains(&format!("message_sha256={sha}")), "{review}");
+    plan.message = b"approve transfer #43".to_vec(); // altered in transit
+    assert!(approval_review(&plan, &intended).is_err(), "a substituted message must not be approvable");
+    plan.message = b"\x1b[2Jpay \x07all".to_vec();
+    let review = approval_review(&plan, &plan.message.clone()).unwrap();
+    assert!(!review.bytes().any(|b| b == 0x1b || b == 0x07), "control bytes reach the terminal: {review:?}");
+}
+
+// R5: a plan that validates must fit the 64 KiB plan and policy readers.
+#[tokio::test]
+async fn plans_that_validate_fit_every_reader() {
+    let f = fixture().await;
+    let mut plan = f.plan(6, &[1, 2]);
+    plan.message = vec![0xff; 8 * 1024];
+    plan.validate().unwrap();
+    assert!(serde_json::to_vec(&plan).unwrap().len() <= 48 * 1024);
+    plan.message = vec![0xff; 16 * 1024];
+    assert!(plan.validate().is_err(), "a plan no reader can load must not validate");
+}
+
+// R3: frames from a non-selected member carry no authority and cannot veto.
+#[tokio::test]
+async fn non_selected_member_frames_are_ignored() {
+    let f = fixture().await;
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    let plan = f.plan(7, &[1, 3]);
+    f.activate_all(&net);
+    for who in [1, 3] { f.approve(&net, &plan, &[who]); }
+    // Member 2 is not selected but knows the public plan and holds grants.
+    let mut outsider = frost::Signer::new(f.binding.clone(), &[2; 39], f.custody(&[2; 39]).key_package).unwrap();
+    let frame = frost::Frame { proposal_action: f.binding.proposal_action.clone(), operation_id: plan.operation_id,
+        message: frost::Message::SigningCommitment(outsider.commit(plan.operation_id, &plan.message).unwrap()) };
+    for to in [[1; 39], [3; 39]] {
+        let env = frame.encode(&f.binding, &[2; 39], &to, plan.sequence()).unwrap();
+        net.lock().unwrap().inbox.entry(to.to_vec()).or_default().push(env);
+    }
+    let (mut s1, mut s3) = (store(f.dir.path(), &[1; 39]), store(f.dir.path(), &[3; 39]));
+    let mut t1 = SignTransport { net: net.clone(), local: vec![1; 39] };
+    let mut t3 = SignTransport { net: net.clone(), local: vec![3; 39] };
+    let (a1, a3) = tokio::join!(
+        run_signing(&mut t1, &mut s1, f.custody(&[1; 39]), &[1; 39], plan.clone(), poll()),
+        run_signing(&mut t3, &mut s3, f.custody(&[3; 39]), &[3; 39], plan.clone(), poll()));
+    assert_eq!(a1.unwrap(), a3.unwrap());
+}
+
+// R4: a run that fails after registering its deadline journals the abort.
+#[tokio::test]
+async fn failed_run_journals_the_abort() {
+    let f = fixture().await;
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    let plan = f.plan(8, &[1, 2]);
+    f.activate_all(&net);
+    for who in [1, 2] { f.approve(&net, &plan, &[who]); }
+    let mut s1 = store(f.dir.path(), &[1; 39]);
+    let mut t1 = SignTransport { net: net.clone(), local: vec![1; 39] };
+    let short = SigningPoll { interval: Duration::from_millis(1), max_polls: 20 };
+    // Signer 2 never runs, so signer 1 commits and then runs out of budget.
+    let err = run_signing(&mut t1, &mut s1, f.custody(&[1; 39]), &[1; 39], plan.clone(), short)
+        .await.unwrap_err();
+    assert!(err.contains("signature not reached"), "{err}");
+    assert!(s1.expire_at(&plan.descriptor.proposal_action, &plan.operation_id, 1).unwrap(),
+        "the journal must record the operation as aborted, not open");
+}
+
 #[tokio::test]
 async fn tampered_signature_shares_never_yield_a_signature() {
     let f = fixture().await;

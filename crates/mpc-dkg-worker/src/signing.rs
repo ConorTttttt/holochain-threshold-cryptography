@@ -25,7 +25,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 pub const PLAN_SCHEMA: u16 = 1;
-const MAX_MESSAGE: usize = 16 * 1024;
+const MAX_MESSAGE: usize = 8 * 1024;
+/// Compact-JSON bound for a whole plan. Every plan reader (CLI, `mpc-sign`,
+/// and the signing signer policy that embeds the plan) refuses files above
+/// 64 KiB, so a plan that validates must also fit inside those files.
+const MAX_PLAN_BYTES: usize = 48 * 1024;
+const PREVIEW_BYTES: usize = 512;
 
 /// One author-signed `GroupActivationAttestation`, as the pinned conductor
 /// returned it. `author` is the record's author, never a payload field.
@@ -72,6 +77,9 @@ impl SigningPlan {
            self.selected.iter().any(|p| !spec.contains(p)) {
             return Err("invalid signing plan".into());
         }
+        if serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > MAX_PLAN_BYTES {
+            return Err("signing plan too large for its 64 KiB plan and policy files".into());
+        }
         Ok(())
     }
     pub fn binding(&self) -> Result<Binding, String> {
@@ -95,6 +103,32 @@ impl SigningPlan {
     pub fn digest(&self) -> Result<[u8; 32], String> {
         Ok(commitment("signing-plan-v1", &serde_json::to_vec(self).map_err(|e| e.to_string())?))
     }
+}
+
+/// Plain SHA-256 of the message, so an operator can compare with `sha256sum`.
+pub fn message_sha256(message: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(message).into()
+}
+
+/// What an operator must see before approving. The plan file is public and
+/// travels between operators, so the operator supplies their OWN copy of the
+/// exact message, obtained independently of the plan; approval is refused
+/// unless the plan carries exactly those bytes. The preview is escaped, so
+/// message bytes cannot drive the operator's terminal.
+pub fn approval_review(plan: &SigningPlan, operator_message: &[u8]) -> Result<String, String> {
+    plan.validate()?;
+    if plan.message != operator_message {
+        return Err("the plan's message differs from your --message-file; refusing to approve".into());
+    }
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let preview: String = plan.message.iter().take(PREVIEW_BYTES)
+        .flat_map(|b| std::ascii::escape_default(*b)).map(char::from).collect();
+    let more = if plan.message.len() > PREVIEW_BYTES { " (truncated)" } else { "" };
+    Ok(format!("operation_id={}\nmessage_sha256={} bytes={}\nmessage_preview=\"{preview}\"{more}\n\
+        group_verifying_key={}\nselected_signers={}",
+        hex(&plan.operation_id), hex(&message_sha256(&plan.message)), plan.message.len(),
+        hex(&plan.descriptor.group_verifying_key), plan.selected.len()))
 }
 
 /// `Ok(None)` while some member has not attested yet (eventual consistency).
@@ -194,8 +228,11 @@ impl SigningSession {
     }
 
     /// Feed one conductor-authenticated inbox envelope. Envelopes of other
-    /// rounds or operations are ignored; anything malformed or conflicting for
-    /// this operation is an error and the caller must abort.
+    /// rounds or operations are ignored, and so are senders outside the
+    /// approved roster: they carry no authority here, and treating them as
+    /// fatal would let any non-selected member veto the operation. Anything
+    /// malformed or conflicting from a selected signer is an error and the
+    /// caller must abort.
     pub fn ingest(&mut self, env: &Envelope, store: &mut RuntimeStore, now_ms: i64)
         -> Result<Vec<Envelope>, String> {
         if self.artifact.is_some() || !matches!(env.round, 4 | 6) || env.sequence != self.plan.sequence() {
@@ -203,7 +240,7 @@ impl SigningSession {
         }
         let sender = env.sender.clone();
         if sender == self.local || !self.plan.selected.contains(&sender) {
-            return Err("signing frame from a sender outside the approved roster".into());
+            return Ok(vec![]);
         }
         let frame = Frame::decode(&self.binding, env, &self.local, &sender).map_err(|e| e.to_string())?;
         if frame.operation_id != self.plan.operation_id {
@@ -292,6 +329,8 @@ fn now_ms() -> i64 {
 /// Wait for full activation and every approval, sign once, exchange
 /// commitments and shares, aggregate and verify, then publish the result.
 /// Every publish is attempted exactly once; any failure aborts the operation.
+/// A failure after the deadline was registered is journaled as an abort, so
+/// the operation's durable state matches what happened.
 pub async fn run_signing<T: SigningTransport>(transport: &mut T, store: &mut RuntimeStore,
     custody: ShareCustody, local: &[u8], plan: SigningPlan, poll: SigningPoll)
     -> Result<SignedArtifact, String> {
@@ -314,23 +353,33 @@ pub async fn run_signing<T: SigningTransport>(transport: &mut T, store: &mut Run
     };
     let budget_ms = (poll.interval.as_millis() as i64).saturating_mul(i64::from(poll.max_polls));
     let start = now_ms();
+    let (proposal, operation) = (plan.descriptor.proposal_action.clone(), plan.operation_id);
     let (mut session, outbound) = SigningSession::begin(custody, local, plan, active, approved,
         store, start, start.saturating_add(budget_ms).saturating_add(60_000))?;
-    for env in &outbound { transport.publish(env).await?; }
-    let mut seen = BTreeSet::new();
-    loop {
-        if let Some(artifact) = session.artifact() {
-            let artifact = artifact.clone();
-            transport.publish_result(&artifact).await?;
-            return Ok(artifact);
+    let result = async {
+        for env in &outbound { transport.publish(env).await?; }
+        let mut seen = BTreeSet::new();
+        loop {
+            if let Some(artifact) = session.artifact() {
+                let artifact = artifact.clone();
+                transport.publish_result(&artifact).await?;
+                return Ok(artifact);
+            }
+            tick("signature")?;
+            let mut inbox = transport.inbox().await?;
+            inbox.sort_by(|a, b| (a.round, &a.sender).cmp(&(b.round, &b.sender)));
+            for env in inbox {
+                if !seen.insert((env.sender.clone(), env.round, env.sequence)) { continue; }
+                for out in session.ingest(&env, store, now_ms())? { transport.publish(&out).await?; }
+            }
+            if session.artifact().is_none() { tokio::time::sleep(poll.interval).await; }
         }
-        tick("signature")?;
-        let mut inbox = transport.inbox().await?;
-        inbox.sort_by(|a, b| (a.round, &a.sender).cmp(&(b.round, &b.sender)));
-        for env in inbox {
-            if !seen.insert((env.sender.clone(), env.round, env.sequence)) { continue; }
-            for out in session.ingest(&env, store, now_ms())? { transport.publish(&out).await?; }
+    }.await;
+    result.map_err(|e: String| {
+        let reason: String = e.chars().take(200).collect();
+        match store.record_abort(&proposal, &operation, &reason) {
+            Ok(()) => e,
+            Err(journal) => format!("{e}; and the abort could not be journaled: {journal}"),
         }
-        if session.artifact().is_none() { tokio::time::sleep(poll.interval).await; }
-    }
+    })
 }

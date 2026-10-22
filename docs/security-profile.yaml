@@ -1,0 +1,122 @@
+# Project security profile for review. Filled 2026-10-22 from the repository
+# (branch feature/v0.4.0-phase5c-live-writes, HEAD 544270f plus working tree).
+# Unknown or not-yet-established fields are left explicitly blank.
+project:
+  name: "holochain-mpc-core"
+  purpose: >-
+    Dealerless t-of-n FROST Ed25519 key generation and operator-approved
+    threshold signing between independent Holochain agents. Holochain carries
+    authenticated coordination, public evidence and private inbox messages;
+    native per-node workers hold all secrets. Experimental and unaudited:
+    not for production or funded keys.
+  kind: "hybrid"
+specification:
+  algorithm_or_protocol: >-
+    FROST threshold Schnorr signatures (RFC 9591) with the FROST dealerless
+    DKG, through Zcash Foundation frost-ed25519 =3.0.0. The output is a
+    standard RFC 8032 Ed25519 signature.
+  edition_or_variant: >-
+    FROST(Ed25519, SHA-512) ciphersuite; protocol id "frost-ed25519" v1;
+    signing profile ContextBoundV1 (domain-separated signed bytes).
+  authoritative_references:
+    - "RFC 9591: The FROST Protocol for Two-Round Threshold Schnorr Signatures"
+    - "RFC 8032: Edwards-Curve Digital Signature Algorithm (EdDSA)"
+    - "frost-ed25519 / frost-core 3.0.0 (Zcash Foundation) API documentation"
+    - "Holochain 0.7.1, HDK 0.7, HDI 0.8 documentation"
+    - "libsodium crypto_box (X25519 + XSalsa20-Poly1305), via crypto_box =0.9.1"
+    - "XChaCha20-Poly1305 (draft-irtf-cfrg-xchacha), via chacha20poly1305"
+  known_answer_test_vectors: []   # none in this repository; upstream frost-ed25519 carries its own
+  deviations_from_standard:
+    - >-
+      The group signs domain-separated bytes, not the raw application message:
+      "holochain-mpc-frost/ed25519/signature/v1" followed by length-prefixed
+      proposal action, session id, context hash, operation id and message.
+      Verifiers must rebuild these bytes (mpc-sign writes signed-message.bin).
+    - >-
+      Round-1 broadcast consistency comes from an authenticated echo plus a
+      unanimous transcript attestation, not from Byzantine reliable broadcast.
+    - >-
+      DKG round-2 shares are sealed with X25519 + XSalsa20-Poly1305 to per-session
+      keys pinned from author-signed DHT records. The session header is bound
+      inside the ciphertext (no external AAD).
+security:
+  required_properties:
+    - "EUF-CMA of the group signature against up to t-1 corrupted signers (inherited from FROST)"
+    - "Confidentiality and sender authentication of DKG round-2 shares in transit"
+    - "No signature without unanimous group activation and an approval by every selected signer of the exact intent"
+    - "Single-use signing nonces: reserved and burned in SQLite before a commitment leaves the process; never persisted"
+    - "Fail closed on equivocation, conflicting attestations, foreign sessions and stale state"
+  invariants:
+    - "Participant identity is the conductor-authenticated provenance or record author, never a payload field"
+    - "FROST identifiers come from the sorted session roster, never from peers"
+    - "A DKG checkpoint blocks re-entry for the same proposal and agent; there is no resume"
+    - "The share is sealed write-once per (proposal, epoch, owner), bound to the descriptor digest, before completion is journaled"
+    - "start_deadline is insert-once per (proposal, operation): an operation id is never signed twice"
+    - "Each signer profile signs only its own calls: DKG profile = DKG rounds 1-3, reads and key registration; signing profile = one plan's rounds 4/6, three reads and a verified result; probe profile = probe only"
+    - "An approval binds the operator's own copy of the message, compared byte for byte with the plan"
+  attacker_controls:
+    - "Network delivery: timing, ordering, duplication and loss"
+    - "Any agent on the DNA: may publish DHT entries that pass integrity validation"
+    - "Up to t-1 malicious session members (and any member can abort: no robustness claim)"
+    - "Plan files and capability offers in transit between operators"
+  trusted_components:
+    - "Each node's Holochain 0.7.1 conductor and its pinned cell"
+    - "Lair keystore 0.7.1 (agent keys; passphrase typed by the operator)"
+    - "The node's OS user account: worker, relay, signers and mpc-sign share one UID"
+    - "frost-ed25519 3.0.0, curve25519-dalek, crypto_box, chacha20poly1305, rusqlite and the OS RNG"
+  side_channel_threat_model: ""   # not assessed; no side-channel analysis or testing has been done
+  key_management_assumptions: >-
+    Development only. The FROST share is sealed with XChaCha20-Poly1305 under a
+    32-byte storage.key file (0600) on the same disk and UID as the journal.
+    No HSM, no OS keyring, no anti-rollback (restoring an old journal re-enables
+    the one-shot checks, though nonces are never stored, so none can repeat).
+    Agent keys live in Lair.
+runtime:
+  rust_toolchain: "rustc 1.99"
+  target: "native x86_64 Linux (workers, signers, services); wasm32-unknown-unknown (zomes)"
+  critical_features: ["conductor-client", "lair-signer"]
+  interface_compatibility:
+    - "Holochain 0.7.1 host functions only (scripts/check_wasm_imports.py)"
+    - "Integrity zome changes alter the DNA hash: use a fresh test DNA, never replace a deployed cell"
+    - "Coordinator changes need an approved update_coordinators on the persistent 5C cells"
+holochain:
+  enabled: true
+  integrity_zomes: ["mpc_integrity"]
+  coordinator_zomes: ["mpc"]
+  public_dht_data:
+    - "SessionProposal, SessionAcceptance, OutputProposal (result commitment and verification artifact)"
+    - "EncryptionKeyBinding, EncryptionKeyEpoch, TranscriptCheckpoint"
+    - "GroupActivationAttestation, SigningApprovalAttestation (digests only; no message plaintext)"
+    - "Index links from proposals to the above; InboxEvent is a private entry"
+  required_validation_invariants:
+    - "Proposer, acceptor and the authors of keys, checkpoints, outputs, activations and approvals must be session members"
+    - "App entries are immutable; links cannot be deleted"
+    - "Index links are authored by the target entry's author and point at that entry's own proposal"
+    - "Only the author's own CapGrant creates may be deleted (grant revocation)"
+  capability_authorization: >-
+    receive_protocol_message is reachable only through per-peer assigned
+    CapGrants, exchanged as sealed offers during 5C-B provisioning. Every other
+    extern is called as the agent itself, with a zome call signed by a
+    policy-pinned Lair signer.
+verification:
+  relevant_test_commands:
+    - "npm run test:native"
+    - "cargo test -p holochain-mpc-dkg-worker --features lair-signer --lib"
+    - "cargo test -p holochain-mpc-dkg-worker --features lair-signer --bin mpc-phase5c-provision"
+    - "npm run test:sweettest; npm run test:phase5c-b-sweettest"
+    - "npm run check:wasm-imports; python3 -I scripts/check_release.py"
+    - "npm run rehearse:three-nodes (disposable, single host)"
+  negative_tests:
+    - "Tampered shares never aggregate; conflicting approvals or activations fail closed"
+    - "A repeated operation id is refused; a non-selected member cannot sign or veto"
+    - "Approval refused for a substituted plan message; control bytes are escaped"
+    - "Signer profiles refuse each other's calls, rounds, rosters and forged results"
+    - "Forged or impersonated DKG delivery aborts and cannot restart; forked key registrations abort"
+    - "OpenSSL rejects the rehearsal signature over a tampered message"
+  fuzz_targets: []   # none yet
+  known_assurance_gaps:
+    - "No independent audit, formal verification or side-channel assessment"
+    - "Single host only: no separate machines or networks, partition or kill tests"
+    - "Availability against a malicious member is not provided (see the 2026-10-22 review, R6)"
+    - "Same-UID custody without anti-rollback"
+    - "No project-level known-answer vectors or fuzzing"

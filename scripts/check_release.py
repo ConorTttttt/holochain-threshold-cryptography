@@ -115,7 +115,9 @@ for file in ['crates/mpc-frost-ed25519/src/lib.rs',
              'crates/mpc-dkg-worker/src/signing_signer.rs',
              'crates/mpc-dkg-worker/src/sign_main.rs',
              'crates/mpc-dkg-worker/tests/signing_session.rs',
-             'docs/V040_PHASE8_SIGNING.md']:
+             'docs/V040_PHASE8_SIGNING.md',
+             'docs/V040_SECURITY_REVIEW_2026-10-22.md',
+             'docs/security-profile.yaml']:
     if not (ROOT / file).is_file():
         errors.append(f'missing file: {file}')
 if errors:
