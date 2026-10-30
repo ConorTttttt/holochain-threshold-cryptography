@@ -375,3 +375,49 @@ async fn tampered_signature_shares_never_yield_a_signature() {
     assert!(a2.is_err() && a3.is_err());
     assert!(net.lock().unwrap().results.is_empty());
 }
+
+// Phase 7 hardening, task 2: whatever journal state an earlier attempt at an
+// operation left behind when its process ended (deadline only, nonce
+// reserved, commitment published, aborted, expired), a new session for that
+// operation is refused, and other operations still sign.
+#[tokio::test]
+async fn begin_refuses_every_prior_journal_state_of_the_operation() {
+    use holochain_mpc_dkg_worker::signing::approved_intent;
+    use holochain_mpc_frost_ed25519::ControlledSigner;
+    let f = fixture().await;
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    f.activate_all(&net);
+    let active = activated_group(&f.descriptor, &net.lock().unwrap().activations).unwrap().unwrap();
+    let local = [1_u8; 39];
+    for (op, state) in [(20_u8, "deadline"), (21, "reserved"), (22, "published"), (23, "aborted"), (24, "expired")] {
+        let plan = f.plan(op, &[1, 2]);
+        for who in [1, 2] { f.approve(&net, &plan, &[who]); }
+        let approved = approved_intent(&plan, &active, &net.lock().unwrap().approvals).unwrap().unwrap();
+        {
+            let mut s = store(f.dir.path(), &local);
+            let (proposal, id) = (&plan.descriptor.proposal_action, plan.operation_id);
+            s.start_deadline(proposal, &id, if state == "expired" { 150 } else { i64::MAX }).unwrap();
+            if state == "reserved" { s.reserve_nonce(proposal, plan.descriptor.epoch, &id, &local, 100).unwrap(); }
+            if matches!(state, "published" | "aborted" | "expired") {
+                let share = f.custody(&local);
+                let mut signer = ControlledSigner::new(f.binding.clone(), &local, share.key_package,
+                    &share.public_key_package, active.clone()).unwrap();
+                signer.prepare(&mut s, &approved, &plan.message, 100).unwrap();
+            }
+            if state == "aborted" { s.record_abort(proposal, &id, "peer vanished").unwrap(); }
+            if state == "expired" { assert!(s.expire_at(proposal, &id, 200).unwrap()); }
+        } // the process ends here; only the journal remains
+        let mut s = store(f.dir.path(), &local);
+        assert!(SigningSession::begin(f.custody(&local), &local, plan.clone(), active.clone(), approved,
+            &mut s, 100, i64::MAX).is_err(), "{state}: the operation must not start again");
+    }
+    let fresh = f.plan(25, &[1, 2]);
+    for who in [1, 2] { f.approve(&net, &fresh, &[who]); }
+    let (mut s1, mut s2) = (store(f.dir.path(), &[1; 39]), store(f.dir.path(), &[2; 39]));
+    let mut t1 = SignTransport { net: net.clone(), local: vec![1; 39] };
+    let mut t2 = SignTransport { net: net.clone(), local: vec![2; 39] };
+    let (a1, a2) = tokio::join!(
+        run_signing(&mut t1, &mut s1, f.custody(&[1; 39]), &[1; 39], fresh.clone(), poll()),
+        run_signing(&mut t2, &mut s2, f.custody(&[2; 39]), &[2; 39], fresh, poll()));
+    assert_eq!(a1.unwrap(), a2.unwrap());
+}

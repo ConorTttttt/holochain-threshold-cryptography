@@ -9,7 +9,7 @@ ready for the Phase 5B live read (`docs/V040_LAIR_LIVE_PROBE_PHASE5B.md`):
   exact match between the policy and the node. It never reads the app token's
   contents and never prints Lair URL query strings or secrets.
 * `mpc-phase5b-bootstrap` (feature `lair-signer`): one binary with
-  narrowly scoped subcommands. The two that write refuse to run without an
+  narrowly scoped subcommands. Those that write refuse to run without an
   explicit `--confirm-*` flag. **Passing that flag is the operator's
   approval.**
 
@@ -18,11 +18,14 @@ ready for the Phase 5B live read (`docs/V040_LAIR_LIVE_PROBE_PHASE5B.md`):
 | `decode-hash <dna\|agent\|action> <b64>` | validated b64 → 78 hex chars (prefix + DHT checksum checked) | none (read-only) |
 | `write-policy` | new 0600 signer policy built from a provisioned node; `recipients: []` | none (local file only) |
 | `issue-app-token` | ADMIN API `IssueAppAuthenticationToken`; raw token written to a new 0600 file, never printed | `--confirm-admin-token-issue` |
+| `check-app-interfaces` | ADMIN read: lists app interfaces; exits 1 if any allows origin `*` or is not bound to an app (risk R7) | none (read-only) |
+| `attach-app-interface` | ADMIN API `AttachAppInterface` for one port, bound to one installed app and to the single origin `http://localhost:<port>`; reads the result back. Refuses a port that already has an interface. Never `*`, never unbound | `--confirm-admin-interface-attach` |
 | `propose-session` | authors ONE `SessionProposal` (local agent the only participant, threshold 1), signed by the agent's **existing** Lair key | `--confirm-source-chain-write` |
 
-Nothing here creates, imports or exports Lair keys, installs apps, grants
-capabilities, or changes conductor configuration. No output file is ever
-overwritten.
+Nothing here creates, imports or exports Lair keys, installs apps or grants
+capabilities. The only conductor configuration change is
+`attach-app-interface`, which adds one interface and cannot remove or edit an
+existing one. No output file is ever overwritten.
 
 ## Keystore discovery: why `lair-keystore url` "failed"
 

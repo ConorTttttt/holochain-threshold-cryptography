@@ -5,6 +5,7 @@ members = [
   "crates/mpc-security",
   "crates/mpc-runtime",
   "crates/mpc-dkg-worker",
+  "crates/mpc-vault",
   "adapters/holochain-0.7",
   "dnas/mpc/zomes/integrity/mpc_integrity",
   "dnas/mpc/zomes/coordinator/mpc",

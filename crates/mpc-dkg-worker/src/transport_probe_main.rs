@@ -241,6 +241,7 @@ async fn run() -> Result<(), String> {
 }
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-transport-probe", "Transport probe. See docs/V040_PHASE5C_C_TRANSPORT_PROBE.md.");
     if run().await.is_err() {
         eprintln!("FAIL: probe refused or outcome uncertain; inspect state; do not retry a write");
         std::process::exit(1);

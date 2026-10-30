@@ -5,10 +5,16 @@
 //! obtain/pin the Holochain agent and proposal from a trusted conductor and
 //! provision a private directory (0700). Key files (0600) are NOT backed by
 //! Lair or an OS keyring and must be considered development-only material.
+//!
+//! Phase 7 hardening: `custody.json` names the master key source and the
+//! anti-rollback anchor beside the directory. `serve` and `recover_share`
+//! refuse an unsafe layout and a journal older than its anchor, and the store
+//! `recover_share` returns anchors every write (`holochain_mpc_runtime::custody`).
 use crate::ipc::{AuthFrame, ChannelContext};
 use crate::{AuthenticatedController, Command};
 use crate::transport_channel::DurableTransportChannel;
-use holochain_mpc_runtime::{transport_key::TransportKeyBinding, MasterKey, RuntimeStore};
+use holochain_mpc_runtime::custody::{self, Custody};
+use holochain_mpc_runtime::{transport_key::TransportKeyBinding, MasterKey, RuntimeError, RuntimeStore};
 use holochain_mpc_security::activation::GroupDescriptor;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -21,8 +27,8 @@ use zeroize::Zeroizing;
 pub const MAX_IPC_LINE: usize = 512 * 1024;
 const CONFIG: &str = "node.json";
 const IPC_KEY: &str = "ipc.key";
-const STATE_KEY: &str = "storage.key";
-const DATABASE: &str = "journal.sqlite";
+const STATE_KEY: &str = custody::STATE_KEY;
+const DATABASE: &str = custody::JOURNAL;
 const TRANSPORT_DATABASE: &str = "transport.sqlite";
 const SOCKET: &str = "controller.sock";
 
@@ -31,6 +37,7 @@ const SOCKET: &str = "controller.sock";
 pub struct NodeConfig { pub schema: u8, pub context: ChannelContext }
 
 fn invalid(msg: &'static str) -> io::Error { io::Error::new(io::ErrorKind::PermissionDenied, msg) }
+fn custody_refused(e: RuntimeError) -> io::Error { io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()) }
 
 /// Hex decoding used only for PUBLIC agent/action/session identifiers in CLI.
 /// Secret key bytes are never passed as command-line arguments.
@@ -80,6 +87,14 @@ fn read_key(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
     if key.iter().all(|&b| b == 0) { return Err(invalid("unprovisioned node key")); }
     Ok(key)
 }
+/// The journal master key from the configured custody key source, or from
+/// storage.key in a directory provisioned before custody hardening.
+fn master_key(state_dir: &Path) -> io::Result<MasterKey> {
+    if fs::symlink_metadata(state_dir.join(custody::CONFIG)).is_ok() {
+        return Ok(Custody::load(state_dir).map_err(custody_refused)?.master_key());
+    }
+    Ok(MasterKey::from_bytes(*read_key(&state_dir.join(STATE_KEY))?))
+}
 fn random_key() -> io::Result<Zeroizing<[u8; 32]>> {
     let mut key = Zeroizing::new([0_u8; 32]);
     let mut random = File::open("/dev/urandom")?;
@@ -125,7 +140,7 @@ pub(crate) fn open_transport_channel(state_dir: &Path, dna: [u8;39], create: boo
     let binding = TransportKeyBinding {
         dna, agent, proposal, session: config.context.session_id,
     };
-    let master = read_key(&state_dir.join(STATE_KEY))?;
+    let master = master_key(state_dir)?;
     let database = state_dir.join(TRANSPORT_DATABASE);
 
     if create {
@@ -140,7 +155,7 @@ pub(crate) fn open_transport_channel(state_dir: &Path, dna: [u8;39], create: boo
         // No implicit recovery-time DB creation, symlink or hard-link follow.
         let _ = private_file(&database)?;
     }
-    let mut store = RuntimeStore::open(&database, MasterKey::from_bytes(*master))
+    let mut store = RuntimeStore::open(&database, master)
         .map_err(|_| invalid("transport database unavailable or invalid"))?;
     let channel = if create {
         DurableTransportChannel::provision_new(&mut store, &binding)
@@ -184,6 +199,8 @@ mod transport_key_node_tests {
 pub fn provision(state_dir: &Path, context: ChannelContext) -> io::Result<()> {
     if !state_dir.is_absolute() { return Err(invalid("state directory must be absolute")); }
     context.validate().map_err(|_| invalid("invalid Holochain context"))?;
+    // Refuse root, and a parent another user could rename, before creating anything.
+    custody::check_location(state_dir).map_err(custody_refused)?;
     DirBuilder::new().mode(0o700).create(state_dir)?; // fail if exists
     private_directory(state_dir)?;
     let ipc_key = random_key()?;
@@ -191,6 +208,9 @@ pub fn provision(state_dir: &Path, context: ChannelContext) -> io::Result<()> {
     if *ipc_key == *state_key { return Err(invalid("identical independently generated keys")); }
     write_private(&state_dir.join(IPC_KEY), &ipc_key[..])?;
     write_private(&state_dir.join(STATE_KEY), &state_key[..])?;
+    // custody.json (development layout) and the anti-rollback anchor, which
+    // lives beside the directory so restoring the directory cannot rewind it.
+    custody::provision(state_dir, &state_key).map_err(custody_refused)?;
     let config = NodeConfig { schema: 1, context };
     let json = serde_json::to_vec_pretty(&config)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -205,7 +225,10 @@ pub fn provision(state_dir: &Path, context: ChannelContext) -> io::Result<()> {
 pub fn serve(state_dir: &Path) -> io::Result<()> {
     let config = read_config(state_dir)?;
     let ipc_key = read_key(&state_dir.join(IPC_KEY))?;
-    let master_key = read_key(&state_dir.join(STATE_KEY))?;
+    // Phase 7 hardening: refuse an unsafe custody layout, and a journal older
+    // than its anti-rollback anchor, before any DKG state is touched.
+    let custody = Custody::load(state_dir).map_err(custody_refused)?;
+    custody.preflight().map_err(custody_refused)?;
     let database = state_dir.join(DATABASE);
     match fs::symlink_metadata(&database) {
         Ok(meta) => {
@@ -214,11 +237,12 @@ pub fn serve(state_dir: &Path) -> io::Result<()> {
                 return Err(invalid("database file must be private and not a symlink"));
             }
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+        // Create it private, so SQLite's -wal and -shm files inherit mode 0600.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => write_private(&database, b"")?,
         Err(e) => return Err(e),
     }
     let mut controller = AuthenticatedController::new_durable(
-        *ipc_key, config.context, &database, MasterKey::from_bytes(*master_key))
+        *ipc_key, config.context, &database, custody.master_key())
         .map_err(|_| invalid("invalid, altered or previously started DKG state"))?;
     // SQLite files live below the 0700 state directory; ensure that a newly
     // created main database is also private for safe movement/backup handling.
@@ -236,7 +260,11 @@ pub fn serve(state_dir: &Path) -> io::Result<()> {
     // The socket is created in our private directory and may be removed after
     // the single-connection process ends. The journal remains permanent.
     let _ = fs::remove_file(&socket_path);
-    result
+    drop(controller);
+    // The DKG wrote through an unanchored store; anchor its admission, replies
+    // and sealed share now that the ceremony's only connection has ended.
+    let anchored = custody.open_journal().map(drop).map_err(custody_refused);
+    result.and(anchored)
 }
 
 fn serve_connection(controller: &mut AuthenticatedController, mut stream: UnixStream) -> io::Result<()> {
@@ -298,14 +326,15 @@ pub fn read_descriptor(state_dir: &Path) -> io::Result<GroupDescriptor> {
 /// Phase 8: open this node's journal with its master key and reopen the
 /// completed share for `descriptor`. Refused unless that exact descriptor is
 /// the one this node durably completed (see `recover_completed_share`).
+///
+/// Phase 7 hardening: also refused on an unsafe custody layout, a retired
+/// epoch, or a journal older than its anti-rollback anchor (a restored
+/// snapshot). The returned store anchors every later write, including each
+/// nonce reservation and burn, before the write call returns.
 pub fn recover_share(state_dir: &Path, descriptor: &GroupDescriptor)
     -> io::Result<(ChannelContext, RuntimeStore, crate::ShareCustody)> {
     let config = read_config(state_dir)?;
-    let master = read_key(&state_dir.join(STATE_KEY))?;
-    let database = state_dir.join(DATABASE);
-    private_file(&database)?;
-    let store = RuntimeStore::open(&database, MasterKey::from_bytes(*master))
-        .map_err(|_| invalid("cannot open node journal"))?;
+    let store = Custody::load(state_dir).and_then(|c| c.open_journal()).map_err(custody_refused)?;
     let custody = crate::recover_completed_share(&store, &config.context, descriptor)
         .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
     Ok((config.context, store, custody))
@@ -324,10 +353,14 @@ mod tests {
         let dir = temp.path().join("node-1");
         provision(&dir, context()).unwrap();
         assert!(provision(&dir, context()).is_err());
-        for file in ["node.json", "ipc.key", "storage.key"] {
+        for file in ["node.json", "ipc.key", "storage.key", "custody.json"] {
             assert_eq!(fs::metadata(dir.join(file)).unwrap().permissions().mode() & 0o777, 0o600);
         }
         assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        // The anchor sits beside the directory, never inside it.
+        let anchor = temp.path().join("node-1.custody-anchor");
+        assert_eq!(fs::metadata(&anchor).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(Custody::load(&dir).is_ok());
         let mut bad = context(); bad.worker_agent.clear();
         assert!(provision(&temp.path().join("invalid"), bad).is_err());
     }

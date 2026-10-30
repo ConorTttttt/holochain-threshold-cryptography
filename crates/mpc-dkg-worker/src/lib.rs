@@ -14,6 +14,7 @@
 //! secret provisioning or rollback protection. Never use it with valuable keys.
 use std::collections::{BTreeMap, BTreeSet};
 pub mod ipc;
+pub mod notice;
 #[cfg(unix)]
 pub mod node_service;
 #[cfg(unix)]

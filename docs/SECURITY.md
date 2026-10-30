@@ -4,6 +4,13 @@
 shares with this release.** There is no MPC protocol or independently audited
 cryptographic implementation here.
 
+> **Current status (27 October 2026).** The sections below are the v0.2 to
+> v0.3.1 notes and are kept for history. The project now has a native FROST
+> DKG and signing path, but it is still **not production software and has had
+> no independent audit**. For the current non-production criteria see the
+> repository's top-level `SECURITY.md`; for attacks, controls and residual
+> risks see `THREAT_MODEL.md`.
+
 ## Implemented in source (not runtime-tested)
 
 1. Public immutable session specifications and participant signed acceptances.

@@ -4,9 +4,10 @@
 //! process exits, its volatile secret packages are lost, and an existing
 //! proposal/agent pair may NEVER be opened for another ceremony. Use a fresh
 //! Holochain proposal and fresh randomness. An operator who restores an older
-//! database snapshot can defeat this protection: OS-backed anti-rollback and
-//! trustworthy key provisioning are outside this module's guarantee.
-use super::{MasterKey, RResult, RuntimeError, RuntimeStore};
+//! database snapshot can defeat this protection unless the journal is opened
+//! with `RuntimeStore::open_anchored` (Phase 7 hardening); trustworthy key
+//! provisioning is outside this module's guarantee.
+use super::{begin, chain, MasterKey, RResult, RuntimeError, RuntimeStore};
 use chacha20poly1305::{aead::{Aead, AeadCore, KeyInit, OsRng, Payload}, XChaCha20Poly1305, XNonce};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -97,12 +98,14 @@ impl RuntimeStore {
         }
         let record = DkgCheckpoint { state: DkgState::Running, revision: 0, reply_digest: [0;32] };
         let (nonce, ciphertext) = encrypt(&self.key, proposal, owner, session, &record)?;
-        let tx = self.transaction()?;
+        let tx = begin(&mut self.connection)?;
         let written = tx.execute("INSERT OR IGNORE INTO dkg_checkpoints
             (proposal,owner,session,state,revision,nonce,ciphertext) VALUES (?1,?2,?3,'running',0,?4,?5)",
             params![proposal, owner, session.as_slice(), nonce, ciphertext])?;
         if written != 1 { return Err(RuntimeError::Conflict("concurrent DKG start or previous tombstone")); }
+        chain::log_event(&tx, &self.key, "dkg-begin", &[proposal, owner, session])?;
         tx.commit()?;
+        self.check_anchor()?;
         Ok(())
     }
 
@@ -123,12 +126,15 @@ impl RuntimeStore {
         let (nonce, ciphertext) = encrypt(&self.key, proposal, owner, session, &next)?;
         let old_revision = i64::try_from(current.revision).map_err(|_| RuntimeError::Wire("revision overflow"))?;
         let new_revision = i64::try_from(revision).map_err(|_| RuntimeError::Wire("revision overflow"))?;
-        let tx = self.transaction()?;
+        let tx = begin(&mut self.connection)?;
         let written = tx.execute("UPDATE dkg_checkpoints SET state=?4,revision=?5,nonce=?6,ciphertext=?7
             WHERE proposal=?1 AND owner=?2 AND session=?3 AND state='running' AND revision=?8",
             params![proposal,owner,session.as_slice(),next.state.label(),new_revision,nonce,ciphertext,old_revision])?;
         if written != 1 { return Err(RuntimeError::Conflict("concurrent or stale DKG transition")); }
+        chain::log_event(&tx, &self.key, "dkg-reply", &[proposal, owner, session,
+            next.state.label().as_bytes(), &new_revision.to_be_bytes(), &reply_digest])?;
         tx.commit()?;
+        self.check_anchor()?;
         Ok(())
     }
 
@@ -147,7 +153,7 @@ impl RuntimeStore {
         };
         let aborted = DkgCheckpoint { state: DkgState::Aborted, revision, reply_digest: [0;32] };
         let (nonce, ciphertext) = encrypt(&self.key, proposal, owner, session, &aborted)?;
-        let tx = self.transaction()?;
+        let tx = begin(&mut self.connection)?;
         if let Some(current) = current {
             let old_revision = i64::try_from(current.revision).map_err(|_| RuntimeError::Wire("revision overflow"))?;
             let new_revision = i64::try_from(revision).map_err(|_| RuntimeError::Wire("revision overflow"))?;
@@ -161,7 +167,9 @@ impl RuntimeStore {
                 params![proposal,owner,session.as_slice(),nonce,ciphertext])?;
             if written != 1 { return Err(RuntimeError::Conflict("concurrent DKG abort tombstone")); }
         }
+        chain::log_event(&tx, &self.key, "dkg-abort", &[proposal, owner, session])?;
         tx.commit()?;
+        self.check_anchor()?;
         Ok(())
     }
 }

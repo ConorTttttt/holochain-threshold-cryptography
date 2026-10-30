@@ -1,0 +1,1321 @@
+{
+  "schema": 1,
+  "note": "Approved workspace inventory (scripts/check_release.py). Re-record with --record-inventory --confirm-record only after reviewing the change. `binaries` is every shipped binary (release_check.py help-notices); `custody_warning` marks those that hold share custody or move funds.",
+  "workspace": {
+    "members": [
+      "crates/mpc-core",
+      "crates/mpc-frost-ed25519",
+      "crates/mpc-security",
+      "crates/mpc-runtime",
+      "crates/mpc-dkg-worker",
+      "crates/mpc-vault",
+      "adapters/holochain-0.7",
+      "dnas/mpc/zomes/integrity/mpc_integrity",
+      "dnas/mpc/zomes/coordinator/mpc"
+    ],
+    "default_members": [
+      "crates/mpc-core"
+    ],
+    "resolver": "2",
+    "dependencies": {
+      "hdi": "=0.8.1",
+      "hdk": "=0.7.1",
+      "serde": {
+        "version": "1.0",
+        "features": [
+          "derive"
+        ]
+      },
+      "holochain_serialized_bytes": "=0.0.57"
+    },
+    "manifest_sha256": "d52b1c71e34fa94ab216264aa739def43aed5a0d63084bc3126d5ec59573cf5e"
+  },
+  "packages": {
+    "holochain-mpc-core": {
+      "path": "crates/mpc-core",
+      "version": "0.3.4",
+      "dependencies": {
+        "dependencies": {
+          "serde": {
+            "version": "1.0",
+            "features": [
+              "derive"
+            ]
+          },
+          "sha2": "0.10"
+        }
+      },
+      "manifest_sha256": "c9f87ff5652c7e05ef335aa309dd32244d384c62e7208ca4e9fad0fa1ef059ce"
+    },
+    "holochain-mpc-frost-ed25519": {
+      "path": "crates/mpc-frost-ed25519",
+      "version": "0.3.4",
+      "dependencies": {
+        "dependencies": {
+          "holochain-mpc-core": {
+            "path": "../mpc-core"
+          },
+          "holochain-mpc-security": {
+            "path": "../mpc-security"
+          },
+          "holochain-mpc-runtime": {
+            "path": "../mpc-runtime"
+          },
+          "frost-ed25519": {
+            "version": "=3.0.0",
+            "features": [
+              "serialization"
+            ]
+          },
+          "rand": "0.8.5",
+          "serde": {
+            "workspace": true
+          },
+          "serde_json": "1.0"
+        },
+        "dev-dependencies": {
+          "tempfile": "3"
+        }
+      },
+      "manifest_sha256": "a3915b4bfd0019ee691cba6555569f1deb602ebfa522d417b93608e778bf2fd1"
+    },
+    "holochain-mpc-security": {
+      "path": "crates/mpc-security",
+      "version": "0.3.4",
+      "dependencies": {
+        "dependencies": {
+          "holochain-mpc-core": {
+            "path": "../mpc-core"
+          },
+          "serde": {
+            "workspace": true
+          },
+          "serde_json": "1.0",
+          "crypto_box": {
+            "version": "=0.9.1",
+            "features": [
+              "salsa20"
+            ]
+          }
+        },
+        "dev-dependencies": {
+          "serde_json": "1.0"
+        }
+      },
+      "manifest_sha256": "f1fc492e6ed3d32276b1a4d6cfabcee99c079c6f6c89a5b5934416af4b669382"
+    },
+    "holochain-mpc-runtime": {
+      "path": "crates/mpc-runtime",
+      "version": "0.3.7",
+      "dependencies": {
+        "dependencies": {
+          "holochain-mpc-core": {
+            "path": "../mpc-core"
+          },
+          "rusqlite": {
+            "version": "0.37",
+            "features": [
+              "bundled"
+            ]
+          },
+          "chacha20poly1305": "0.10",
+          "serde_json": "1",
+          "serde": {
+            "workspace": true
+          },
+          "zeroize": "1.8"
+        },
+        "dev-dependencies": {
+          "tempfile": "3"
+        }
+      },
+      "manifest_sha256": "429f366ed0ec16daef3170a1c8940f46dfbf9ad17497c519814274d177f54285"
+    },
+    "holochain-mpc-dkg-worker": {
+      "path": "crates/mpc-dkg-worker",
+      "version": "0.3.9",
+      "dependencies": {
+        "dependencies": {
+          "holochain-mpc-core": {
+            "path": "../mpc-core"
+          },
+          "holochain-mpc-security": {
+            "path": "../mpc-security"
+          },
+          "holochain-mpc-frost-ed25519": {
+            "path": "../mpc-frost-ed25519"
+          },
+          "holochain-mpc-runtime": {
+            "path": "../mpc-runtime"
+          },
+          "serde": {
+            "workspace": true
+          },
+          "serde_json": "1.0",
+          "hmac": "0.12.1",
+          "sha2": "0.10.9",
+          "zeroize": "1.8",
+          "libc": "0.2",
+          "holochain_websocket": {
+            "version": "=0.7.1",
+            "optional": true
+          },
+          "holochain_conductor_api": {
+            "version": "=0.7.1",
+            "optional": true
+          },
+          "holochain_zome_types": {
+            "version": "=0.7.1",
+            "optional": true
+          },
+          "holochain_serialized_bytes": {
+            "workspace": true,
+            "optional": true
+          },
+          "tokio": {
+            "version": "1",
+            "features": [
+              "rt-multi-thread",
+              "macros",
+              "net",
+              "io-util",
+              "time",
+              "signal"
+            ]
+          },
+          "holochain_nonce": {
+            "version": "=0.7.1",
+            "optional": true
+          },
+          "holochain_keystore": {
+            "version": "=0.7.1",
+            "optional": true
+          },
+          "lair_keystore_api": {
+            "version": "=0.7.1",
+            "optional": true
+          },
+          "url2": {
+            "version": "0.0.6",
+            "optional": true
+          },
+          "rpassword": {
+            "version": "7",
+            "optional": true
+          },
+          "rand": {
+            "version": "0.8.5",
+            "optional": true
+          }
+        },
+        "dev-dependencies": {
+          "holochain_nonce": "=0.7.1",
+          "rand": "0.8.5",
+          "tempfile": "3",
+          "rusqlite": {
+            "version": "0.37",
+            "features": [
+              "bundled"
+            ]
+          },
+          "hdk": {
+            "workspace": true,
+            "features": [
+              "mock"
+            ]
+          },
+          "holochain": {
+            "version": "=0.7.1",
+            "default-features": false,
+            "features": [
+              "wasmer-sys-cranelift",
+              "test_utils",
+              "encryption"
+            ]
+          },
+          "tokio": {
+            "version": "1",
+            "features": [
+              "full"
+            ]
+          },
+          "mpc": {
+            "path": "../../dnas/mpc/zomes/coordinator/mpc"
+          },
+          "mpc_integrity": {
+            "path": "../../dnas/mpc/zomes/integrity/mpc_integrity"
+          }
+        }
+      },
+      "manifest_sha256": "cfdb4bd1eb22205466b65bc57d5d1651f83e23930fc7e48f65ca024d4ccbdeb6"
+    },
+    "holochain-mpc-vault": {
+      "path": "crates/mpc-vault",
+      "version": "0.1.0",
+      "dependencies": {
+        "dependencies": {
+          "serde": {
+            "workspace": true
+          },
+          "serde_json": "1.0",
+          "sha2": "0.10.9",
+          "ed25519-dalek": "2.2",
+          "bs58": "0.5",
+          "base64": "0.22",
+          "ureq": "3",
+          "tokio": {
+            "version": "1",
+            "features": [
+              "rt-multi-thread",
+              "macros",
+              "net",
+              "time",
+              "sync",
+              "signal"
+            ]
+          },
+          "axum": {
+            "version": "0.8",
+            "default-features": false,
+            "features": [
+              "http1",
+              "tokio"
+            ]
+          },
+          "libc": "0.2",
+          "rand": "0.8.5"
+        },
+        "dev-dependencies": {
+          "tempfile": "3"
+        }
+      },
+      "manifest_sha256": "0725d1d8ed5492e74a1ebeb03d8d29304438a1a093235bb35462f75c17021738"
+    },
+    "holochain-mpc-adapter": {
+      "path": "adapters/holochain-0.7",
+      "version": "0.3.4",
+      "dependencies": {
+        "dependencies": {
+          "hdk": {
+            "workspace": true
+          },
+          "holochain-mpc-core": {
+            "path": "../../crates/mpc-core"
+          }
+        }
+      },
+      "manifest_sha256": "382b03d24f3ba1d34cc9f0b888079d94ce0cdda39bc4f78fbc9d122ae7d0065e"
+    },
+    "mpc_integrity": {
+      "path": "dnas/mpc/zomes/integrity/mpc_integrity",
+      "version": "0.3.4",
+      "dependencies": {
+        "dependencies": {
+          "hdi": {
+            "workspace": true
+          },
+          "holochain_serialized_bytes": {
+            "workspace": true
+          },
+          "serde": {
+            "workspace": true
+          },
+          "holochain-mpc-core": {
+            "path": "../../../../../crates/mpc-core"
+          }
+        }
+      },
+      "manifest_sha256": "c53d6f918090cf7a695212e0c155b9d51435efcee8dc261f3744070ab9b8baef"
+    },
+    "mpc": {
+      "path": "dnas/mpc/zomes/coordinator/mpc",
+      "version": "0.3.4",
+      "dependencies": {
+        "dependencies": {
+          "hdk": {
+            "workspace": true
+          },
+          "serde": {
+            "workspace": true
+          },
+          "mpc_integrity": {
+            "path": "../../integrity/mpc_integrity"
+          },
+          "serde_json": "1.0",
+          "holochain-mpc-core": {
+            "path": "../../../../../crates/mpc-core"
+          },
+          "holochain-mpc-adapter": {
+            "path": "../../../../../adapters/holochain-0.7"
+          }
+        },
+        "dev-dependencies": {
+          "holochain": {
+            "version": "=0.7.1",
+            "default-features": false,
+            "features": [
+              "wasmer-sys-cranelift",
+              "test_utils",
+              "encryption"
+            ]
+          },
+          "tokio": {
+            "version": "1",
+            "features": [
+              "full"
+            ]
+          },
+          "holochain-mpc-frost-ed25519": {
+            "path": "../../../../../crates/mpc-frost-ed25519"
+          },
+          "holochain-mpc-security": {
+            "path": "../../../../../crates/mpc-security"
+          }
+        }
+      },
+      "manifest_sha256": "642441dc5f243caa1f7381315ed90745380f3734fbfb81c06e296d9b6c091672"
+    }
+  },
+  "cargo_lock": {
+    "sha256": "34f5cd14ab6dbc0ca064df90e555d9853fc8239a22f275375008bdd9d0d2ede8",
+    "packages": [
+      "addr2line 0.25.1",
+      "adler2 2.0.1",
+      "adler32 1.2.0",
+      "aead 0.5.2",
+      "aes 0.8.4",
+      "aes 0.9.3",
+      "aes-gcm 0.10.3",
+      "ahash 0.8.12",
+      "aho-corasick 1.1.5",
+      "allocator-api2 0.2.21",
+      "android_system_properties 0.1.6",
+      "ansi_term 0.12.1",
+      "anstream 1.0.0",
+      "anstyle 1.0.14",
+      "anstyle-parse 1.0.0",
+      "anstyle-query 1.1.5",
+      "anstyle-wincon 3.0.11",
+      "anyhow 1.0.104",
+      "arbitrary 1.5.0",
+      "arc-swap 1.9.2",
+      "arrayvec 0.7.8",
+      "asn1-rs 0.7.2",
+      "asn1-rs-derive 0.6.0",
+      "asn1-rs-impl 0.2.0",
+      "async-channel 2.5.0",
+      "async-lock 3.4.2",
+      "async-recursion 1.2.0",
+      "async-trait 0.1.92",
+      "async_io_stream 0.3.3",
+      "atoi 2.0.0",
+      "atomic-polyfill 1.0.3",
+      "atomic-waker 1.1.2",
+      "attohttpc 0.30.1",
+      "autocfg 1.5.1",
+      "aws-lc-rs 1.18.2",
+      "aws-lc-sys 0.46.0",
+      "axum 0.8.9",
+      "axum-core 0.5.6",
+      "axum-server 0.7.3",
+      "backon 1.6.0",
+      "backtrace 0.3.76",
+      "base16ct 0.2.0",
+      "base16ct 1.0.0",
+      "base64 0.22.1",
+      "base64 0.23.1",
+      "base64ct 1.8.3",
+      "bimap 0.6.3",
+      "bindgen 0.72.1",
+      "bit-set 0.11.1",
+      "bit-vec 0.10.1",
+      "bit-vec 0.9.1",
+      "bitflags 1.3.2",
+      "bitflags 2.13.2",
+      "blake2b_simd 1.0.5",
+      "blake3 1.8.7",
+      "block-buffer 0.10.4",
+      "block-buffer 0.12.1",
+      "block2 0.6.2",
+      "borsh 1.8.1",
+      "borsh-derive 1.8.1",
+      "bs58 0.5.1",
+      "bumpalo 3.20.3",
+      "bytecheck 0.8.3",
+      "bytecheck_derive 0.8.3",
+      "bytemuck 1.25.2",
+      "byteorder 1.5.0",
+      "bytes 1.12.1",
+      "bytesize 2.7.0",
+      "bzip2 0.6.1",
+      "cc 1.8.0",
+      "cesu8 1.1.0",
+      "cexpr 0.6.0",
+      "cfg-if 1.0.5",
+      "cfg_aliases 0.2.2",
+      "chacha20 0.10.2",
+      "chacha20 0.9.1",
+      "chacha20poly1305 0.10.1",
+      "chrono 0.4.45",
+      "cipher 0.4.4",
+      "cipher 0.5.2",
+      "clang-sys 1.9.1",
+      "clap 4.6.7",
+      "clap_builder 4.6.7",
+      "clap_derive 4.6.7",
+      "clap_lex 1.1.1",
+      "cmake 0.1.58",
+      "cmov 0.5.4",
+      "cobs 0.3.0",
+      "colorchoice 1.0.5",
+      "colored 3.1.1",
+      "combine 4.6.9",
+      "concurrent-queue 2.5.0",
+      "const-crc32-nostd 1.3.1",
+      "const-oid 0.10.2",
+      "const-oid 0.9.6",
+      "constant_time_eq 0.4.2",
+      "convert_case 0.10.0",
+      "cordyceps 0.3.5",
+      "core-foundation 0.10.1",
+      "core-foundation 0.9.4",
+      "core-foundation-sys 0.8.7",
+      "core_detect 1.0.0",
+      "corosensei 0.3.4",
+      "cpubits 0.1.1",
+      "cpufeatures 0.2.17",
+      "cpufeatures 0.3.1",
+      "cranelift-assembler-x64 0.129.2",
+      "cranelift-assembler-x64-meta 0.129.2",
+      "cranelift-bforest 0.129.1",
+      "cranelift-bitset 0.129.1",
+      "cranelift-codegen 0.129.1",
+      "cranelift-codegen-meta 0.129.2",
+      "cranelift-codegen-shared 0.129.2",
+      "cranelift-control 0.129.2",
+      "cranelift-entity 0.129.1",
+      "cranelift-frontend 0.129.1",
+      "cranelift-isle 0.129.1",
+      "cranelift-srcgen 0.129.2",
+      "crc 3.4.0",
+      "crc-catalog 2.5.0",
+      "crc32fast 1.5.2",
+      "critical-section 1.2.0",
+      "cron 0.15.0",
+      "crossbeam-channel 0.5.17",
+      "crossbeam-deque 0.8.8",
+      "crossbeam-epoch 0.9.21",
+      "crossbeam-queue 0.3.14",
+      "crossbeam-utils 0.8.23",
+      "crypto-common 0.1.7",
+      "crypto-common 0.2.2",
+      "crypto_box 0.9.1",
+      "crypto_secretbox 0.1.1",
+      "ctr 0.9.2",
+      "ctrlc 3.5.2",
+      "ctutils 0.4.3",
+      "curve25519-dalek 4.1.3",
+      "curve25519-dalek 5.0.0",
+      "curve25519-dalek-derive 0.1.1",
+      "darling 0.20.11",
+      "darling 0.21.3",
+      "darling 0.24.1",
+      "darling_core 0.20.11",
+      "darling_core 0.21.3",
+      "darling_core 0.24.1",
+      "darling_macro 0.20.11",
+      "darling_macro 0.21.3",
+      "darling_macro 0.24.1",
+      "dary_heap 0.3.9",
+      "dashmap 6.2.1",
+      "data-encoding 2.11.1",
+      "data-encoding-macro 0.1.21",
+      "data-encoding-macro-internal 0.1.19",
+      "deflate64 0.1.12",
+      "defmt 1.2.0",
+      "defmt-macros 1.2.0",
+      "defmt-parser 1.1.0",
+      "der 0.7.10",
+      "der 0.8.2",
+      "der-parser 10.0.0",
+      "deranged 0.5.9",
+      "derive-getters 0.5.0",
+      "derive_arbitrary 1.5.0",
+      "derive_builder 0.20.2",
+      "derive_builder_core 0.20.2",
+      "derive_builder_macro 0.20.2",
+      "derive_more 2.1.1",
+      "derive_more-impl 2.1.1",
+      "diatomic-waker 0.2.3",
+      "diff 0.1.13",
+      "digest 0.10.7",
+      "digest 0.11.3",
+      "dirs 6.0.0",
+      "dirs-sys 0.5.0",
+      "dispatch2 0.3.1",
+      "displaydoc 0.2.7",
+      "dlopen2 0.8.2",
+      "document-features 0.2.12",
+      "dotenvy 0.15.7",
+      "downcast 0.11.0",
+      "dunce 1.0.5",
+      "dyn-clone 1.0.20",
+      "ed25519 2.2.3",
+      "ed25519 3.0.0",
+      "ed25519-dalek 2.2.0",
+      "ed25519-dalek 3.0.0",
+      "either 1.19.0",
+      "embedded-io 0.4.0",
+      "embedded-io 0.6.1",
+      "enum-assoc 1.4.1",
+      "enum-iterator 2.3.0",
+      "enum-iterator-derive 1.5.0",
+      "enumset 1.1.14",
+      "enumset_derive 0.15.0",
+      "env_filter 2.0.0",
+      "env_logger 0.11.11",
+      "equivalent 1.0.3",
+      "errno 0.3.14",
+      "etcetera 0.11.0",
+      "event-listener 5.4.2",
+      "event-listener-strategy 0.5.4",
+      "fallible-iterator 0.3.0",
+      "fallible-streaming-iterator 0.1.9",
+      "fastrand 2.5.0",
+      "fiat-crypto 0.2.9",
+      "fiat-crypto 0.3.0",
+      "filetime 0.2.29",
+      "find-msvc-tools 0.1.14",
+      "fixt 0.7.1",
+      "flate2 1.1.10",
+      "flume 0.12.0",
+      "fnv 1.0.7",
+      "foldhash 0.1.5",
+      "foldhash 0.2.0",
+      "form_urlencoded 1.2.2",
+      "fragile 2.1.0",
+      "frost-core 3.0.0",
+      "frost-ed25519 3.0.0",
+      "frost-rerandomized 3.0.0",
+      "fs-err 3.3.2",
+      "fs_extra 1.3.0",
+      "futures 0.3.34",
+      "futures-buffered 0.2.13",
+      "futures-channel 0.3.34",
+      "futures-core 0.3.34",
+      "futures-executor 0.3.34",
+      "futures-intrusive 0.5.0",
+      "futures-io 0.3.34",
+      "futures-lite 2.6.1",
+      "futures-macro 0.3.34",
+      "futures-sink 0.3.34",
+      "futures-task 0.3.34",
+      "futures-util 0.3.34",
+      "generator 0.8.11",
+      "generic-array 0.14.7",
+      "getrandom 0.2.17",
+      "getrandom 0.3.4",
+      "getrandom 0.4.3",
+      "ghash 0.5.1",
+      "gimli 0.32.3",
+      "gimli 0.33.0",
+      "glob 0.3.4",
+      "gloo-timers 0.3.0",
+      "h2 0.4.20",
+      "hash32 0.2.1",
+      "hashbrown 0.12.3",
+      "hashbrown 0.14.5",
+      "hashbrown 0.15.5",
+      "hashbrown 0.16.1",
+      "hashbrown 0.17.1",
+      "hashlink 0.10.0",
+      "hashlink 0.11.1",
+      "hc_seed_bundle 0.7.1",
+      "hdi 0.8.1",
+      "hdk 0.7.1",
+      "hdk_derive 0.7.1",
+      "heapless 0.7.17",
+      "heck 0.5.0",
+      "hermit-abi 0.5.3",
+      "hex 0.4.3",
+      "hex-literal 1.1.0",
+      "hkdf 0.13.0",
+      "hmac 0.12.1",
+      "hmac 0.13.0",
+      "holo_hash 0.7.1",
+      "holochain 0.7.1",
+      "holochain-mpc-adapter 0.3.4 (workspace)",
+      "holochain-mpc-core 0.3.4 (workspace)",
+      "holochain-mpc-dkg-worker 0.3.9 (workspace)",
+      "holochain-mpc-frost-ed25519 0.3.4 (workspace)",
+      "holochain-mpc-runtime 0.3.7 (workspace)",
+      "holochain-mpc-security 0.3.4 (workspace)",
+      "holochain-mpc-vault 0.1.0 (workspace)",
+      "holochain_cascade 0.7.1",
+      "holochain_conductor_api 0.7.1",
+      "holochain_conductor_config 0.7.1",
+      "holochain_data 0.7.1",
+      "holochain_integrity_types 0.7.1",
+      "holochain_keystore 0.7.1",
+      "holochain_metrics 0.7.1",
+      "holochain_nonce 0.7.1",
+      "holochain_p2p 0.7.1",
+      "holochain_secure_primitive 0.7.1",
+      "holochain_serialized_bytes 0.0.57",
+      "holochain_serialized_bytes_derive 0.0.57",
+      "holochain_state 0.7.1",
+      "holochain_state_types 0.7.1",
+      "holochain_test_wasm_common 0.7.1",
+      "holochain_timestamp 0.7.1",
+      "holochain_trace 0.7.1",
+      "holochain_types 0.7.1",
+      "holochain_util 0.7.1",
+      "holochain_wasm_test_utils 0.7.1",
+      "holochain_wasmer_common 0.0.103",
+      "holochain_wasmer_guest 0.0.103",
+      "holochain_wasmer_host 0.0.103",
+      "holochain_websocket 0.7.1",
+      "holochain_zome_types 0.7.1",
+      "hostname 0.4.2",
+      "http 1.5.0",
+      "http-body 1.1.0",
+      "http-body-util 0.1.5",
+      "httparse 1.10.1",
+      "httpdate 1.0.3",
+      "human-panic 2.0.8",
+      "hybrid-array 0.4.15",
+      "hyper 1.12.0",
+      "hyper-rustls 0.27.10",
+      "hyper-util 0.1.21",
+      "iana-time-zone 0.1.65",
+      "iana-time-zone-haiku 0.1.2",
+      "icu_collections 2.3.0",
+      "icu_locale_core 2.3.0",
+      "icu_normalizer 2.3.0",
+      "icu_normalizer_data 2.3.0",
+      "icu_properties 2.3.0",
+      "icu_properties_data 2.3.0",
+      "icu_provider 2.3.1",
+      "ident_case 1.0.1",
+      "identity-hash 0.1.0",
+      "idna 1.1.0",
+      "idna_adapter 1.2.2",
+      "igd-next 0.17.1",
+      "indexmap 1.9.3",
+      "indexmap 2.14.2",
+      "inferno 0.12.8",
+      "influxdb 0.8.0",
+      "inout 0.1.4",
+      "inout 0.2.3",
+      "ipconfig 0.3.4",
+      "ipnet 2.12.2",
+      "iroh 1.3.0",
+      "iroh-base 1.3.0",
+      "iroh-dns 1.3.0",
+      "iroh-metrics 1.0.2",
+      "iroh-metrics-derive 1.0.1",
+      "iroh-relay 1.3.0",
+      "is_terminal_polyfill 1.70.2",
+      "itertools 0.13.0",
+      "itertools 0.14.0",
+      "itertools 0.8.2",
+      "itoa 1.0.18",
+      "jiff 0.2.38",
+      "jiff-core 0.1.1",
+      "jiff-static 0.2.38",
+      "jiff-tzdb 0.1.9",
+      "jiff-tzdb-platform 0.1.3",
+      "jni 0.21.1",
+      "jni 0.22.4",
+      "jni-macros 0.22.4",
+      "jni-sys 0.3.1",
+      "jni-sys 0.4.1",
+      "jni-sys-macros 0.4.1",
+      "jobserver 0.1.35",
+      "js-sys 0.3.106",
+      "kitsune2 0.5.2",
+      "kitsune2_api 0.5.2",
+      "kitsune2_bootstrap_client 0.5.2",
+      "kitsune2_bootstrap_srv 0.5.2",
+      "kitsune2_core 0.5.2",
+      "kitsune2_dht 0.5.2",
+      "kitsune2_gossip 0.5.2",
+      "kitsune2_transport_iroh 0.5.2",
+      "lair_keystore 0.7.1",
+      "lair_keystore_api 0.7.1",
+      "lazy-regex 3.6.2",
+      "lazy-regex-proc_macros 3.6.2",
+      "lazy_static 1.5.1",
+      "leb128 0.2.7",
+      "leb128fmt 0.1.0",
+      "libbz2-rs-sys 0.2.5",
+      "libc 0.2.190",
+      "libflate 2.3.2",
+      "libflate_lz77 2.3.0",
+      "libloading 0.8.9",
+      "libm 0.2.16",
+      "libredox 0.1.25",
+      "libsodium-sys-stable 1.24.3",
+      "libsqlite3-sys 0.35.0",
+      "libunwind 1.3.3",
+      "libyaml-rs 0.3.0",
+      "linux-raw-sys 0.12.1",
+      "litemap 0.8.3",
+      "litrs 1.0.1",
+      "lock_api 0.4.14",
+      "log 0.4.34",
+      "loom 0.7.2",
+      "lru 0.17.0",
+      "lru 0.18.5",
+      "lru-slab 0.1.3",
+      "lzma-rust2 0.16.5",
+      "mac-addr 0.3.0",
+      "mach2 0.4.3",
+      "mach2 0.6.0",
+      "macho-unwind-info 0.5.0",
+      "matchers 0.2.0",
+      "matches 0.1.10",
+      "matchit 0.8.4",
+      "md-5 0.11.0",
+      "memchr 2.8.3",
+      "memmap2 0.6.2",
+      "memmap2 0.9.11",
+      "memoffset 0.9.1",
+      "mime 0.3.17",
+      "minimal-lexical 0.2.1",
+      "minisign-verify 0.2.5",
+      "miniz_oxide 0.8.9",
+      "miniz_oxide 0.9.1",
+      "mio 1.2.4",
+      "mockall 0.13.1",
+      "mockall_derive 0.13.1",
+      "moka 0.12.16",
+      "more-asserts 0.3.1",
+      "mpc 0.3.4 (workspace)",
+      "mpc_integrity 0.3.4 (workspace)",
+      "mr_bundle 0.7.1",
+      "munge 0.4.7",
+      "munge_macro 0.4.7",
+      "must_future 0.1.2",
+      "n0-dns-resolver 0.1.0",
+      "n0-error 1.0.1",
+      "n0-error-macros 1.0.1",
+      "n0-future 0.3.2",
+      "n0-watcher 1.0.0",
+      "nanoid 0.4.0",
+      "nanoid 0.5.0",
+      "ndk-context 0.1.1",
+      "netdev 0.45.1",
+      "netdev 0.46.3",
+      "netlink-packet-core 0.8.2",
+      "netlink-packet-core 0.9.0",
+      "netlink-packet-route 0.31.0",
+      "netlink-packet-route 0.33.0",
+      "netlink-proto 0.12.2",
+      "netlink-sys 0.8.8",
+      "netlink-sys 0.9.0",
+      "netwatch 0.19.3",
+      "nix 0.31.3",
+      "no_std_io2 0.9.4",
+      "nom 7.1.3",
+      "noq 1.3.0",
+      "noq-proto 1.3.0",
+      "noq-udp 1.3.0",
+      "ntapi 0.4.3",
+      "nu-ansi-term 0.50.3",
+      "num-bigint 0.4.8",
+      "num-conv 0.2.2",
+      "num-format 0.4.4",
+      "num-integer 0.1.47",
+      "num-traits 0.2.19",
+      "num_cpus 1.17.0",
+      "num_enum 0.7.6",
+      "num_enum_derive 0.7.6",
+      "objc2 0.6.5",
+      "objc2-core-foundation 0.3.2",
+      "objc2-core-wlan 0.3.2",
+      "objc2-encode 4.1.0",
+      "objc2-foundation 0.3.2",
+      "objc2-io-kit 0.3.2",
+      "objc2-security 0.3.2",
+      "objc2-security-foundation 0.3.2",
+      "objc2-system-configuration 0.3.2",
+      "object 0.37.3",
+      "object 0.38.1",
+      "oid-registry 0.8.1",
+      "once_cell 1.21.4",
+      "once_cell_polyfill 1.70.2",
+      "one_err 0.0.8",
+      "opaque-debug 0.3.1",
+      "openssl-probe 0.2.1",
+      "openssl-src 300.6.1+3.6.3",
+      "openssl-sys 0.9.117",
+      "opentelemetry 0.30.0",
+      "opentelemetry 0.31.0",
+      "opentelemetry-http 0.30.0",
+      "opentelemetry-otlp 0.30.0",
+      "opentelemetry-proto 0.30.0",
+      "opentelemetry_sdk 0.30.0",
+      "opentelemetry_sdk 0.31.0",
+      "option-ext 0.2.0",
+      "papaya 0.2.5",
+      "parking 2.2.1",
+      "parking_lot 0.12.5",
+      "parking_lot_core 0.9.12",
+      "paste 1.0.15",
+      "pbkdf2 0.13.0",
+      "pem 3.0.6",
+      "pem 4.0.0",
+      "pem-rfc7468 1.0.0",
+      "percent-encoding 2.3.2",
+      "pharos 0.5.3",
+      "pin-project 1.1.13",
+      "pin-project-internal 1.1.13",
+      "pin-project-lite 0.2.17",
+      "pin-utils 0.1.1",
+      "pkcs8 0.10.2",
+      "pkcs8 0.11.0",
+      "pkg-config 0.3.34",
+      "plist 1.10.1",
+      "poly1305 0.8.0",
+      "polyval 0.6.2",
+      "portable-atomic 1.15.0",
+      "portable-atomic-util 0.2.8",
+      "portmapper 0.19.3",
+      "postcard 1.1.3",
+      "postcard-derive 0.2.2",
+      "potential_utf 0.1.6",
+      "powerfmt 0.2.1",
+      "ppmd-rust 1.5.0",
+      "ppv-lite86 0.2.21",
+      "predicates 3.1.4",
+      "predicates-core 1.0.10",
+      "predicates-tree 1.0.13",
+      "pretty_assertions 1.4.1",
+      "prettyplease 0.2.37",
+      "proc-macro-crate 3.5.0",
+      "proc-macro-error 1.0.4",
+      "proc-macro-error-attr 1.0.4",
+      "proc-macro-error-attr2 2.0.0",
+      "proc-macro-error2 2.0.1",
+      "proc-macro2 1.0.107",
+      "proptest 1.12.0",
+      "proptest-derive 0.5.1",
+      "proptest-derive 0.9.0",
+      "prost 0.13.5",
+      "prost 0.14.4",
+      "prost-derive 0.13.5",
+      "prost-derive 0.14.4",
+      "ptr_meta 0.3.2",
+      "ptr_meta_derive 0.3.2",
+      "quick-error 1.2.3",
+      "quick-xml 0.41.0",
+      "quick-xml 0.42.0",
+      "quinn 0.11.9",
+      "quinn-proto 0.11.14",
+      "quinn-udp 0.5.16",
+      "quote 1.0.47",
+      "r-efi 5.3.0",
+      "r-efi 6.0.0",
+      "rancor 0.1.3",
+      "rand 0.10.3",
+      "rand 0.8.8",
+      "rand 0.9.5",
+      "rand-utf8 0.0.2",
+      "rand_chacha 0.3.1",
+      "rand_chacha 0.9.0",
+      "rand_core 0.10.1",
+      "rand_core 0.6.4",
+      "rand_core 0.9.5",
+      "rand_pcg 0.10.2",
+      "rand_xorshift 0.5.0",
+      "rangemap 1.8.0",
+      "rayon 1.12.0",
+      "rayon-core 1.13.0",
+      "rcgen 0.14.10",
+      "redox_syscall 0.5.18",
+      "redox_users 0.5.3",
+      "ref-cast 1.0.27",
+      "ref-cast-impl 1.0.27",
+      "regalloc2 0.13.5",
+      "regex 1.13.1",
+      "regex-automata 0.4.18",
+      "regex-syntax 0.8.11",
+      "region 3.0.2",
+      "reloadable-core 0.1.0",
+      "reloadable-state 0.1.0",
+      "rend 0.5.4",
+      "reqwest 0.12.28",
+      "reqwest 0.13.5",
+      "rgb 0.8.53",
+      "ring 0.17.14",
+      "rkyv 0.8.18",
+      "rkyv_derive 0.8.18",
+      "rle-decode-fast 1.0.3",
+      "rmp 0.8.15",
+      "rmp-serde 1.3.0",
+      "rmpv 1.3.1",
+      "rpassword 7.5.4",
+      "rtoolbox 0.0.6",
+      "rusqlite 0.37.0",
+      "rustc-demangle 0.1.28",
+      "rustc-hash 2.1.3",
+      "rustc_version 0.4.1",
+      "rusticata-macros 4.1.0",
+      "rustix 1.1.5",
+      "rustls 0.23.46",
+      "rustls-cert-file-reader 0.4.2",
+      "rustls-cert-read 0.3.0",
+      "rustls-cert-reloadable-resolver 0.7.1",
+      "rustls-native-certs 0.8.5",
+      "rustls-pemfile 2.2.0",
+      "rustls-pki-types 1.15.1",
+      "rustls-platform-verifier 0.7.1",
+      "rustls-platform-verifier-android 0.2.0",
+      "rustls-webpki 0.103.16",
+      "rustversion 1.0.23",
+      "rusty-fork 0.3.1",
+      "ruzstd 0.8.3",
+      "ryu 1.0.23",
+      "salsa20 0.10.2",
+      "same-file 1.0.6",
+      "schannel 0.1.30",
+      "schemars 0.9.0",
+      "schemars 1.2.3",
+      "schemars_derive 0.9.0",
+      "scoped-tls 1.0.1",
+      "scopeguard 1.2.0",
+      "sd-notify 0.4.5",
+      "security-framework 3.7.0",
+      "security-framework-sys 2.17.0",
+      "seize 0.5.1",
+      "self_cell 1.3.0",
+      "semver 1.0.28",
+      "send_wrapper 0.6.0",
+      "serde 1.0.228",
+      "serde-transcode 1.1.1",
+      "serde-wasm-bindgen 0.6.5",
+      "serde_bytes 0.11.19",
+      "serde_core 1.0.228",
+      "serde_derive 1.0.228",
+      "serde_derive_internals 0.29.1",
+      "serde_json 1.0.154",
+      "serde_path_to_error 0.1.20",
+      "serde_spanned 1.1.2",
+      "serde_urlencoded 0.7.1",
+      "serde_with 3.24.0",
+      "serde_with_macros 3.24.0",
+      "serdect 0.2.0",
+      "serdect 0.4.3",
+      "sha1 0.10.7",
+      "sha1 0.11.0",
+      "sha1_smol 1.0.1",
+      "sha2 0.10.9",
+      "sha2 0.11.1",
+      "sharded-slab 0.1.7",
+      "shared-buffer 0.1.4",
+      "shlex 1.3.0",
+      "shlex 2.0.1",
+      "shrinkwraprs 0.3.0",
+      "signal-hook-registry 1.4.8",
+      "signature 2.2.0",
+      "signature 3.0.0",
+      "simd-adler32 0.3.10",
+      "simd_cesu8 1.2.0",
+      "simdutf8 0.1.5",
+      "simple-dns 0.12.0",
+      "slab 0.4.12",
+      "smallvec 1.16.3",
+      "socket2 0.6.3",
+      "sodoken 0.1.0",
+      "sorted-index-buffer 0.2.1",
+      "spez 0.1.2",
+      "spin 0.10.1",
+      "spin 0.9.9",
+      "spki 0.7.3",
+      "spki 0.8.1",
+      "sqlformat 0.5.0",
+      "sqlx 0.9.0",
+      "sqlx-core 0.9.0",
+      "sqlx-macros 0.9.0",
+      "sqlx-macros-core 0.9.0",
+      "sqlx-mysql 0.9.0",
+      "sqlx-postgres 0.9.0",
+      "sqlx-sqlite 0.9.0",
+      "stable_deref_trait 1.2.1",
+      "str_stack 0.1.1",
+      "stringprep 0.1.5",
+      "strsim 0.11.1",
+      "strum 0.27.2",
+      "strum 0.28.0",
+      "strum_macros 0.27.2",
+      "strum_macros 0.28.0",
+      "subtle 2.6.1",
+      "subtle-encoding 0.5.1",
+      "symlink 0.1.0",
+      "syn 1.0.109",
+      "syn 2.0.119",
+      "syn 3.0.9",
+      "sync_wrapper 1.0.2",
+      "synstructure 0.13.2",
+      "synstructure 0.14.0",
+      "sysinfo 0.38.4",
+      "system-configuration 0.7.0",
+      "system-configuration 0.8.0",
+      "system-configuration-sys 0.6.0",
+      "tagptr 0.2.0",
+      "tar 0.4.46",
+      "target-lexicon 0.13.5",
+      "task-motel 0.1.0",
+      "tempfile 3.27.0",
+      "terminal_size 0.4.4",
+      "termtree 0.5.1",
+      "thiserror 1.0.69",
+      "thiserror 2.0.21",
+      "thiserror-impl 1.0.69",
+      "thiserror-impl 2.0.21",
+      "thread_local 1.1.10",
+      "time 0.3.55",
+      "time-core 0.1.9",
+      "time-macros 0.2.32",
+      "tinystr 0.8.4",
+      "tinyvec 1.13.3",
+      "tokio 1.53.3",
+      "tokio-macros 2.7.2",
+      "tokio-rustls 0.26.6",
+      "tokio-rustls-acme 0.9.1",
+      "tokio-stream 0.1.19",
+      "tokio-tungstenite 0.27.0",
+      "tokio-tungstenite 0.29.0",
+      "tokio-util 0.7.20",
+      "tokio-websockets 0.13.3",
+      "toml 1.1.8+spec-1.1.0",
+      "toml_datetime 1.1.2+spec-1.1.0",
+      "toml_edit 0.25.17+spec-1.1.0",
+      "toml_parser 1.1.5+spec-1.1.0",
+      "toml_writer 1.1.3+spec-1.1.0",
+      "tonic 0.13.1",
+      "tower 0.5.3",
+      "tower-http 0.6.11",
+      "tower-layer 0.3.3",
+      "tower-service 0.3.3",
+      "tracing 0.1.44",
+      "tracing-appender 0.2.5",
+      "tracing-attributes 0.1.31",
+      "tracing-core 0.1.36",
+      "tracing-futures 0.2.5",
+      "tracing-log 0.2.0",
+      "tracing-serde 0.2.0",
+      "tracing-subscriber 0.3.23",
+      "try-lock 0.2.5",
+      "tungstenite 0.27.0",
+      "tungstenite 0.29.0",
+      "twox-hash 2.1.5",
+      "typed-path 0.12.3",
+      "typenum 1.20.1",
+      "unarray 0.1.4",
+      "unicode-bidi 0.3.18",
+      "unicode-ident 1.0.27",
+      "unicode-normalization 0.1.25",
+      "unicode-properties 0.1.4",
+      "unicode-segmentation 1.13.3",
+      "unicode-width 0.2.2",
+      "unicode-xid 0.2.6",
+      "unicode_categories 0.1.1",
+      "universal-hash 0.5.1",
+      "untrusted 0.9.0",
+      "unwrap_to 0.1.0",
+      "ureq 3.4.2",
+      "ureq-proto 0.6.4",
+      "url 2.5.8",
+      "url2 0.0.6",
+      "utf-8 0.7.6",
+      "utf8-zero 0.8.1",
+      "utf8_iter 1.0.4",
+      "utf8parse 0.2.2",
+      "uuid 1.28.0",
+      "uuid-rng-internal 1.28.0",
+      "valuable 0.1.1",
+      "vcpkg 0.2.15",
+      "version_check 0.9.5",
+      "visibility 0.1.1",
+      "wait-timeout 0.2.1",
+      "walkdir 2.5.0",
+      "want 0.3.2",
+      "wasi 0.11.1+wasi-snapshot-preview1",
+      "wasip2 1.0.4+wasi-0.2.12",
+      "wasm-bindgen 0.2.129",
+      "wasm-bindgen-futures 0.4.79",
+      "wasm-bindgen-macro 0.2.129",
+      "wasm-bindgen-macro-support 0.2.129",
+      "wasm-bindgen-shared 0.2.129",
+      "wasm-encoder 0.262.0",
+      "wasm-streams 0.4.2",
+      "wasm-streams 0.5.0",
+      "wasmer 7.1.0",
+      "wasmer-compiler 7.1.0",
+      "wasmer-compiler-cranelift 7.1.0",
+      "wasmer-derive 7.1.0",
+      "wasmer-middlewares 7.1.0",
+      "wasmer-types 7.1.0",
+      "wasmer-vm 7.1.0",
+      "wasmparser 0.245.1",
+      "wasmparser 0.262.0",
+      "wasmtime-internal-core 42.0.1",
+      "wast 262.0.0",
+      "wat 1.262.0",
+      "web-sys 0.3.106",
+      "web-time 1.1.0",
+      "webpki-root-certs 1.0.9",
+      "webpki-roots 1.0.10",
+      "which 8.0.6",
+      "whoami 2.1.3",
+      "widestring 1.2.1",
+      "winapi 0.3.9",
+      "winapi-i686-pc-windows-gnu 0.4.0",
+      "winapi-util 0.1.11",
+      "winapi-x86_64-pc-windows-gnu 0.4.0",
+      "windows 0.62.2",
+      "windows-collections 0.3.2",
+      "windows-core 0.62.2",
+      "windows-future 0.3.2",
+      "windows-implement 0.60.2",
+      "windows-interface 0.59.3",
+      "windows-link 0.2.1",
+      "windows-numerics 0.3.1",
+      "windows-registry 0.6.1",
+      "windows-result 0.4.1",
+      "windows-strings 0.5.1",
+      "windows-sys 0.45.0",
+      "windows-sys 0.52.0",
+      "windows-sys 0.59.0",
+      "windows-sys 0.61.2",
+      "windows-targets 0.42.2",
+      "windows-targets 0.52.6",
+      "windows-threading 0.2.1",
+      "windows_aarch64_gnullvm 0.42.2",
+      "windows_aarch64_gnullvm 0.52.6",
+      "windows_aarch64_msvc 0.42.2",
+      "windows_aarch64_msvc 0.52.6",
+      "windows_i686_gnu 0.42.2",
+      "windows_i686_gnu 0.52.6",
+      "windows_i686_gnullvm 0.52.6",
+      "windows_i686_msvc 0.42.2",
+      "windows_i686_msvc 0.52.6",
+      "windows_x86_64_gnu 0.42.2",
+      "windows_x86_64_gnu 0.52.6",
+      "windows_x86_64_gnullvm 0.42.2",
+      "windows_x86_64_gnullvm 0.52.6",
+      "windows_x86_64_msvc 0.42.2",
+      "windows_x86_64_msvc 0.52.6",
+      "winnow 0.6.26",
+      "winnow 0.7.15",
+      "winnow 1.0.4",
+      "wit-bindgen 0.57.1",
+      "wmi 0.18.4",
+      "writeable 0.6.4",
+      "ws_stream_wasm 0.7.5",
+      "x509-parser 0.18.1",
+      "xattr 1.6.1",
+      "xml-rs 0.8.29",
+      "xmltree 0.10.3",
+      "yaml_serde 0.10.7",
+      "yansi 1.0.1",
+      "yasna 0.6.0",
+      "yoke 0.8.3",
+      "yoke-derive 0.8.4",
+      "zerocopy 0.8.63",
+      "zerocopy-derive 0.8.63",
+      "zerofrom 0.1.8",
+      "zerofrom-derive 0.1.8",
+      "zeroize 1.9.1",
+      "zeroize_derive 1.5.0",
+      "zerotrie 0.2.5",
+      "zerovec 0.11.8",
+      "zerovec-derive 0.11.6",
+      "zip 8.6.0",
+      "zlib-rs 0.6.8",
+      "zmij 1.0.23",
+      "zopfli 0.8.4",
+      "zstd 0.13.3",
+      "zstd-safe 7.3.0",
+      "zstd-sys 2.1.2+zstd.1.5.7"
+    ]
+  },
+  "binaries": {
+    "mpc-conductor-call": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-conductor-connect": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-custody": {
+      "package": "holochain-mpc-runtime",
+      "custody_warning": true
+    },
+    "mpc-dkg-worker": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-lair-live-probe": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-lair-signer": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-node": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-phase5b-bootstrap": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-phase5c-provision": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-relay-service": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-sign": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-transport-probe": {
+      "package": "holochain-mpc-dkg-worker",
+      "features": [
+        "lair-signer"
+      ]
+    },
+    "mpc-vault": {
+      "package": "holochain-mpc-vault",
+      "custody_warning": true
+    }
+  }
+}

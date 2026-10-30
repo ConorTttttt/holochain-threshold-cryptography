@@ -36,6 +36,7 @@ fn execute_args() -> Result<(PathBuf, std::net::SocketAddr, String, PathBuf, Str
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-conductor-connect", "Identity preflight against a loopback app interface. See docs/V040_APP_WEBSOCKET_PREFLIGHT.md.");
     let result: Result<(), String> = async {
         let (state, addr, origin, token, app_id, role, dna) = execute_args()?;
         let node = pinned_context(&state).map_err(|e| e.to_string())?;

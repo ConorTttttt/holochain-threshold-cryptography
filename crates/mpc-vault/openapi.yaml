@@ -1,0 +1,622 @@
+openapi: 3.0.3
+info:
+  title: MPC Vault local service
+  version: 0.1.0
+  description: |
+    DEVELOPMENT BUILD. DEVNET ONLY. NOT PRODUCTION CUSTODY.
+
+    A local JSON service on 127.0.0.1 that turns the existing 2-of-3 FROST
+    signing flow into a Safe-style vault for one Ed25519 chain (mock chain or
+    Solana devnet). One service process serves ONE node: "approve" drives the
+    operator CLI approval for this node only. The other operators run their own
+    service and import the same proposal with `POST /proposals/import`.
+
+    Rules the contract guarantees:
+    - Every decoded summary is derived by the service from the exact bytes that
+      will be signed (`message_sha256`). Clients never supply a summary.
+      If stored bytes and summary ever disagree, `integrity.status` is
+      `mismatch`, every write on the proposal is refused with 409
+      `bytes_summary_mismatch`, and the UI must disable approval.
+    - Signing and broadcast are never retried automatically. There is no retry
+      endpoint for either. A failed or uncertain write is terminal; the error
+      says how to inspect it.
+    - Policy enforcement (spending limits, allowlists) is NOT implemented.
+      Owners and threshold cannot change without a new DKG (a new vault).
+    - Rejecting is local to this node. It cannot cancel what other nodes do,
+      and it is refused once this node has approved (an approval cannot be
+      retracted).
+
+    Authentication: every endpoint except `GET /health` and the static UI under
+    `/ui/` needs `Authorization: Bearer <token>`. The token is read from a
+    0600 file given to the service. Requests whose Host header is not
+    127.0.0.1 or localhost are refused (DNS rebinding).
+
+    Every error body is `{"error": {"code", "message", "action"}}`:
+    what failed, and what the operator should do. 4xx errors are never retried
+    by the service.
+servers:
+  - url: http://127.0.0.1:8787
+security:
+  - bearer: []
+tags:
+  - name: vaults
+  - name: proposals
+  - name: activity
+paths:
+  /health:
+    get:
+      summary: Liveness and build banner (no authentication)
+      security: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, banner]
+                properties:
+                  ok: {type: boolean}
+                  banner:
+                    type: string
+                    example: Development build. Devnet only. Not production custody.
+  /vaults:
+    get:
+      tags: [vaults]
+      summary: List vaults
+      responses:
+        '200':
+          description: vaults
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vaults]
+                properties:
+                  vaults:
+                    type: array
+                    items: {$ref: '#/components/schemas/Vault'}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [vaults]
+      summary: Create a vault from this node's completed group
+      description: |
+        Reads the node's group descriptor (written when the DKG completed) and
+        derives the vault from it: the group public key is the chain address,
+        the members and threshold come from the descriptor. One vault per
+        group; a second call for the same group returns 409 `vault_exists`.
+        The chain is fixed at creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, chain]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 64}
+                chain:
+                  type: string
+                  enum: [mock, solana-devnet]
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Vault'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /vaults/{id}:
+    get:
+      tags: [vaults]
+      summary: One vault with live balance
+      description: |
+        `balance` is queried from the chain on every call. If the chain cannot
+        be reached, `balance` is null and `balance_error` says why; the
+        request still succeeds.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: vault
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Vault'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /proposals/preview:
+    post:
+      tags: [proposals]
+      summary: Decode a transfer without creating anything
+      description: |
+        Builds the unsigned transaction exactly as `POST /proposals` would and
+        returns the summary decoded from those bytes. Nothing is stored and no
+        plan is written.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NewProposal'}
+      responses:
+        '200':
+          description: preview
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [summary, message_sha256, message_len]
+                properties:
+                  summary: {$ref: '#/components/schemas/Summary'}
+                  message_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+                  message_len: {type: integer, maximum: 8192}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /proposals:
+    get:
+      tags: [proposals]
+      summary: List proposals, newest first
+      parameters:
+        - {name: vault_id, in: query, required: false, schema: {type: string}}
+        - {name: state, in: query, required: false, schema: {$ref: '#/components/schemas/State'}}
+      responses:
+        '200':
+          description: proposals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [proposals]
+                properties:
+                  proposals:
+                    type: array
+                    items: {$ref: '#/components/schemas/Proposal'}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [proposals]
+      summary: Propose a transfer (build transaction, create signing plan)
+      description: |
+        Builds the unsigned transaction, runs `mpc-phase5c-provision
+        make-intent` with the serialized transaction as the message (at most
+        8 KiB), and stores the proposal in state `proposed`. The selected
+        signers default to this node and the first other member (2 of 3).
+        Share the result of `GET /proposals/{id}/plan` with the other selected
+        operator, who imports it with `POST /proposals/import`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NewProposal'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Proposal'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /proposals/import:
+    post:
+      tags: [proposals]
+      summary: Import a proposal created on another node
+      description: |
+        Takes the signing plan (as returned by `GET /proposals/{id}/plan` on
+        the proposing node). The service decodes the plan's message with its
+        own chain adapter and derives the summary itself. Refused when the
+        plan belongs to another group, repeats a known operation id
+        (`replay`), carries bytes the adapter cannot decode, or does not
+        select this node.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vault_id, plan]
+              properties:
+                vault_id: {type: string}
+                plan:
+                  type: object
+                  description: The public signing plan JSON, unmodified.
+                expires_in_secs: {type: integer, minimum: 60, maximum: 604800}
+      responses:
+        '201':
+          description: imported
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Proposal'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /proposals/{id}:
+    get:
+      tags: [proposals]
+      summary: One proposal with its decoded transaction
+      description: |
+        Also advances time-based state: a proposal that is still `proposed` or
+        `approved` after `expires_at` and has not started signing becomes
+        `expired`. After a broadcast, a background poller on the service reads
+        the chain by signature (never a resend) until the proposal is
+        `confirmed` or `failed`; `POST /proposals/{id}/refresh` polls once more.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: proposal
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Proposal'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /proposals/{id}/plan:
+    get:
+      tags: [proposals]
+      summary: The public signing plan, to hand to the other operator
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: the plan JSON exactly as make-intent wrote it
+          content:
+            application/json:
+              schema: {type: object}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /proposals/{id}/approve:
+    post:
+      tags: [proposals]
+      summary: Approve with THIS node (starts the operator CLI approval)
+      description: |
+        Returns 202 immediately; the work runs as `local_task` = `approving`,
+        then `signing` once this node has approved. Poll `GET /proposals/{id}`.
+        The caller must echo the `message_sha256` it displayed, so the approval
+        is bound to the exact bytes the person reviewed. The service re-decodes
+        the stored bytes, checks them against the plan and the summary, and
+        only then runs `approve-intent` with the node's own message copy. The
+        Lair passphrase is never part of the API: it is typed on the terminal
+        the service runs in (or read from a 0600 file in a disposable
+        rehearsal). A second approval by the same node is refused.
+        After this node approves, the service starts this node's signer and
+        `mpc-sign`, which wait for the other selected signer. Neither is ever
+        retried.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm, message_sha256]
+              properties:
+                confirm: {type: boolean, enum: [true]}
+                message_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+      responses:
+        '202':
+          description: accepted; approval is running
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Proposal'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403':
+          description: this node is not a selected signer (`not_selected`)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorBody'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409':
+          description: |
+            Wrong state or already approved: `bad_state`, `already_approved`,
+            `expired`, `bytes_summary_mismatch`, `hash_mismatch`, `busy`.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorBody'}
+  /proposals/{id}/reject:
+    post:
+      tags: [proposals]
+      summary: Reject on THIS node (local, final)
+      description: |
+        Marks the proposal `rejected` here and stops this node from ever
+        approving it. Allowed only while this node has not approved
+        (`already_approved` otherwise: an approval cannot be retracted). Other
+        nodes are not told; if two other members approve, it still signs.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string, maxLength: 200}
+      responses:
+        '200':
+          description: rejected
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Proposal'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /proposals/{id}/refresh:
+    post:
+      tags: [proposals]
+      summary: Re-read approvals from Holochain, or the chain after signing (read-only)
+      description: |
+        While `proposed` or `approved`: runs `signing-status` for this node and
+        updates `confirmations`. It unlocks Lair, so with an interactive
+        passphrase it prompts on the service terminal. While `signed` or
+        `broadcast`: reads the chain once by signature. Never writes to
+        Holochain or the chain.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200':
+          description: proposal with refreshed confirmations
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Proposal'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+  /proposals/{id}/broadcast:
+    post:
+      tags: [proposals]
+      summary: Broadcast a signed proposal once
+      description: |
+        Only for a `signed` proposal whose broadcast was never attempted on
+        this node (the proposing node does this automatically unless
+        auto-broadcast is off). The attempt is journalled BEFORE the network
+        call; a second call is refused with `broadcast_attempted` whatever the
+        first outcome was. If the first outcome is unknown the proposal is
+        `broadcast` with `broadcast.uncertain` true and is resolved by polling
+        the chain for its signature, never by resending.
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '202':
+          description: broadcast attempted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Proposal'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /events:
+    get:
+      tags: [activity]
+      summary: Activity log, oldest first
+      parameters:
+        - {name: after, in: query, required: false, schema: {type: integer, minimum: 0, default: 0}, description: Return events with seq greater than this.}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 500, default: 200}}
+      responses:
+        '200':
+          description: events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: {$ref: '#/components/schemas/Event'}
+        '401': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: {type: string}
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorBody'}
+  schemas:
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, action]
+          properties:
+            code:
+              type: string
+              description: |
+                Stable machine code, for example `unauthorized`, `not_found`,
+                `bad_request`, `not_selected`, `bad_state`, `already_approved`,
+                `expired`, `replay`, `vault_exists`, `bytes_summary_mismatch`,
+                `hash_mismatch`, `message_too_large`, `broadcast_attempted`,
+                `busy`, `chain_unavailable`, `node_failed`.
+            message: {type: string, description: What failed.}
+            action: {type: string, description: What the operator should do.}
+    State:
+      type: string
+      enum: [proposed, approved, signed, broadcast, confirmed, rejected, expired, failed]
+      description: |
+        proposed: no approval yet. approved: at least one selected signer has
+        approved (see `confirmations`; signing starts when this node has
+        approved). signed: the group signature exists and verifies under the
+        vault key. broadcast: submitted to the chain once. confirmed: the chain
+        reports the transaction final enough. rejected, expired, failed are
+        terminal.
+    Money:
+      type: object
+      required: [raw, decimals, symbol, display]
+      properties:
+        raw: {type: string, description: 'Integer in base units, as a string.', example: '1000000'}
+        decimals: {type: integer, example: 9}
+        symbol: {type: string, example: SOL}
+        display: {type: string, example: 0.001 SOL}
+    Summary:
+      type: object
+      description: Decoded from the exact bytes that will be signed.
+      required: [network, from, recipient, amount, fee]
+      properties:
+        network: {type: string, example: solana-devnet}
+        from: {type: string, description: Payer and sender, the vault address.}
+        recipient: {type: string}
+        amount: {$ref: '#/components/schemas/Money'}
+        fee: {$ref: '#/components/schemas/Money'}
+        memo:
+          type: string
+          nullable: true
+          description: Memo text found inside the signed bytes, if any.
+        notes:
+          type: array
+          items: {type: string}
+          description: Adapter remarks, for example that a durable nonce is used.
+    Member:
+      type: object
+      required: [index, agent, local]
+      properties:
+        index: {type: integer}
+        agent: {type: string, description: Holochain AgentPubKey, base64url (uhCAk...).}
+        local: {type: boolean, description: True for the node this service runs.}
+    Vault:
+      type: object
+      required: [id, name, chain, address, group_public_key, members, threshold, group_status, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        chain: {type: string, enum: [mock, solana-devnet]}
+        address:
+          type: string
+          description: The chain address derived from the group public key (base58 on Solana, hex on mock).
+        group_public_key: {type: string, description: 64 hex characters.}
+        members:
+          type: array
+          items: {$ref: '#/components/schemas/Member'}
+        threshold: {type: integer, example: 2}
+        group_status:
+          type: string
+          enum: [descriptor_present]
+          description: |
+            The node holds a completed group descriptor. Full activation by
+            every member is checked when a proposal is approved; the service
+            does not claim more here.
+        balance:
+          allOf: [{$ref: '#/components/schemas/Money'}]
+          nullable: true
+        balance_error: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
+        notes:
+          type: array
+          items: {type: string}
+          description: 'Always includes the policy and owner-change limits.'
+    NewProposal:
+      type: object
+      required: [vault_id, recipient, amount]
+      properties:
+        vault_id: {type: string}
+        recipient: {type: string, description: Chain address.}
+        amount: {type: string, description: Integer in base units (lamports on Solana), as a string., example: '1000000'}
+        memo: {type: string, maxLength: 140}
+        selected_signers:
+          type: array
+          minItems: 2
+          items: {type: string, description: Member agent (base64url).}
+          description: Defaults to this node and the next member.
+        expires_in_secs: {type: integer, minimum: 60, maximum: 604800, default: 86400}
+    Integrity:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [verified, mismatch]}
+        detail: {type: string, nullable: true}
+    Confirmations:
+      type: object
+      required: [count, required, approvers, observed_at]
+      properties:
+        count: {type: integer, example: 1}
+        required: {type: integer, example: 2}
+        approvers:
+          type: array
+          items: {type: string}
+        observed_at:
+          type: string
+          format: date-time
+          description: When these were last read. Remote approvals are only known after `/refresh` or a completed signature.
+    Signer:
+      type: object
+      required: [agent, local, approved]
+      properties:
+        agent: {type: string}
+        local: {type: boolean}
+        approved:
+          type: boolean
+          nullable: true
+          description: null means not yet observed on this node.
+    TimelineEntry:
+      type: object
+      required: [at, event]
+      properties:
+        at: {type: string, format: date-time}
+        node: {type: string, nullable: true, description: Agent the entry concerns, if any.}
+        event: {type: string}
+    Failure:
+      type: object
+      required: [step, reason, action]
+      properties:
+        step: {type: string, enum: [approve, sign, attach, broadcast, confirm, integrity]}
+        reason: {type: string}
+        action: {type: string}
+    Proposal:
+      type: object
+      required: [id, vault_id, state, origin, created_at, updated_at, expires_at, operation_id, message_sha256, message_len, signers, confirmations, summary, integrity, timeline]
+      properties:
+        id: {type: string}
+        vault_id: {type: string}
+        state: {$ref: '#/components/schemas/State'}
+        local_task:
+          type: string
+          nullable: true
+          enum: [approving, signing, broadcasting, null]
+          description: Work this node is doing now. Not a state.
+        origin: {type: string, enum: [created, imported]}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        operation_id: {type: string, description: 64 hex characters.}
+        message_sha256: {type: string, description: Plain SHA-256 of the signed bytes; compare with sha256sum.}
+        message_len: {type: integer}
+        signers:
+          type: array
+          items: {$ref: '#/components/schemas/Signer'}
+        confirmations: {$ref: '#/components/schemas/Confirmations'}
+        summary: {$ref: '#/components/schemas/Summary'}
+        integrity: {$ref: '#/components/schemas/Integrity'}
+        signature: {type: string, nullable: true, description: 128 hex characters once signed.}
+        broadcast:
+          type: object
+          nullable: true
+          properties:
+            attempted_at: {type: string, format: date-time}
+            uncertain: {type: boolean}
+            txid: {type: string, nullable: true}
+            url: {type: string, nullable: true}
+        failure:
+          allOf: [{$ref: '#/components/schemas/Failure'}]
+          nullable: true
+        timeline:
+          type: array
+          items: {$ref: '#/components/schemas/TimelineEntry'}
+    Event:
+      type: object
+      required: [seq, at, kind, message]
+      properties:
+        seq: {type: integer}
+        at: {type: string, format: date-time}
+        kind: {type: string, example: proposal.approved}
+        proposal_id: {type: string, nullable: true}
+        message: {type: string}

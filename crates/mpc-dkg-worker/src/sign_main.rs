@@ -96,6 +96,7 @@ async fn run() -> Result<(), String> {
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-sign", "Threshold signing service. See docs/V040_PHASE8_SIGNING.md.");
     if let Err(e) = run().await {
         eprintln!("FAIL: signing service terminated: {e}");
         eprintln!("This operation id must not be retried; approve a new signing plan.");

@@ -1,0 +1,26 @@
+[package]
+name = "holochain-mpc-vault"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Local Safe-style vault service over the 2-of-3 FROST signing flow (devnet only, development build)"
+
+[[bin]]
+name = "mpc-vault"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = "1.0"
+sha2 = "0.10.9"
+ed25519-dalek = "2.2"
+bs58 = "0.5"
+base64 = "0.22"
+ureq = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+libc = "0.2"
+rand = "0.8.5"
+
+[dev-dependencies]
+tempfile = "3"

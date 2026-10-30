@@ -5,11 +5,17 @@
 //!                      provisioned node directory (local file only).
 //! * `issue-app-token`— ADMIN write: ask the local conductor for an app token
 //!                      and store it raw in a new 0600 file. Never printed.
+//! * `check-app-interfaces` — ADMIN read: list the conductor's app interfaces and
+//!                      fail if any allows any origin or is not bound to an app
+//!                      (risk R7). Changes nothing.
+//! * `attach-app-interface` — ADMIN write: attach ONE new app interface bound to
+//!                      one installed app and to the single origin
+//!                      `http://localhost:<port>`. Never `*`, never unbound.
 //! * `propose-session`— SOURCE-CHAIN write: author ONE single-participant
 //!                      read-probe `SessionProposal`, signed with the agent's
 //!                      existing Lair key. Prints only public identifiers.
 //!
-//! The two write commands refuse to run without an explicit `--confirm-*`
+//! The write commands refuse to run without an explicit `--confirm-*`
 //! flag: that flag is the operator's approval, not a convenience default.
 //! Nothing here creates or exports Lair keys, installs apps, grants
 //! capabilities, or changes conductor configuration.
@@ -171,6 +177,100 @@ async fn issue_app_token(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// R7: the origin the Phase 5B/5C tools send for an app interface on `port`
+/// (`--origin http://localhost:<port>`), and the ONLY origin an interface made
+/// by `attach-app-interface` accepts.
+fn interface_origin(port: u16) -> String { format!("http://localhost:{port}") }
+
+/// Validated request for a per-app interface: loopback bind (the conductor's
+/// default when no bind address is given), one explicit origin, one app.
+fn attach_request(app_id: &str, port: &str) -> Result<(u16, AdminRequest), String> {
+    let port: u16 = port.parse().ok().filter(|p| *p != 0).ok_or("invalid app port")?;
+    if app_id.is_empty() || app_id.len() > 128 ||
+       app_id.chars().any(|c| c.is_whitespace() || c.is_control() || c == ',' || c == '*') {
+        return Err("invalid installed app id".into());
+    }
+    Ok((port, AdminRequest::AttachAppInterface {
+        port: Some(port), danger_bind_addr: None,
+        allowed_origins: interface_origin(port).into(), installed_app_id: Some(app_id.to_owned()) }))
+}
+
+/// Problems with one listed interface. Empty means acceptable.
+fn interface_findings(port: u16, origins: &str, app: Option<&str>, expect_app: Option<&str>) -> Vec<String> {
+    let mut found = Vec::new();
+    if origins.split(',').any(|o| o.trim() == "*") { found.push(format!("port {port}: allows any origin (*)")); }
+    match (app, expect_app) {
+        (None, _) => found.push(format!("port {port}: not bound to an installed app")),
+        (Some(a), Some(e)) if a != e => found.push(format!("port {port}: bound to another app ({a})")),
+        _ => {}
+    }
+    found
+}
+
+async fn admin_request(addr: SocketAddr, request: AdminRequest) -> Result<AdminResponse, String> {
+    let (sender, mut receiver) = connect(Arc::new(WebsocketConfig::CLIENT_DEFAULT), addr)
+        .await.map_err(|_| "local admin socket unavailable")?;
+    let pump = tokio::spawn(async move { while receiver.recv::<AdminResponse>().await.is_ok() {} });
+    let response = tokio::time::timeout(RPC_DEADLINE, sender.request::<_, AdminResponse>(request)).await;
+    pump.abort();
+    match response {
+        Ok(Ok(AdminResponse::Error(_))) => Err("conductor refused the admin request".into()),
+        Ok(Ok(other)) => Ok(other),
+        _ => Err("admin RPC failed".into()),
+    }
+}
+
+async fn listed_interfaces(addr: SocketAddr) -> Result<Vec<(u16, String, Option<String>)>, String> {
+    match admin_request(addr, AdminRequest::ListAppInterfaces).await? {
+        AdminResponse::AppInterfacesListed(list) => Ok(list.into_iter()
+            .map(|i| (i.port, String::from(i.allowed_origins), i.installed_app_id)).collect()),
+        _ => Err("unexpected reply to ListAppInterfaces".into()),
+    }
+}
+
+async fn check_app_interfaces(args: &[String]) -> Result<(), String> {
+    let m = flags(args, &["--admin-port", "--installed-app-id"])?;
+    let addr = local_addr(need(&m, "--admin-port")?)?;
+    let expect = m.get("--installed-app-id").map(String::as_str);
+    let list = listed_interfaces(addr).await?;
+    let mut problems = 0;
+    for (port, origins, app) in &list {
+        let found = interface_findings(*port, origins, app.as_deref(), expect);
+        println!("interface port={port} allowed_origins={origins} installed_app_id={}",
+            app.as_deref().unwrap_or("(none)"));
+        for f in &found { println!("  FINDING {f}"); }
+        problems += found.len();
+    }
+    if list.is_empty() { println!("no app interfaces attached"); }
+    if problems > 0 { return Err(format!("{problems} app-interface finding(s) (risk R7)")); }
+    Ok(())
+}
+
+async fn attach_app_interface(args: &[String]) -> Result<(), String> {
+    let m = flags(args, &["--admin-port", "--installed-app-id", "--app-port", "--confirm-admin-interface-attach"])?;
+    if !m.contains_key("--confirm-admin-interface-attach") {
+        return Err("refusing: pass --confirm-admin-interface-attach to approve attaching an app interface".into());
+    }
+    let addr = local_addr(need(&m, "--admin-port")?)?;
+    let app = need(&m, "--installed-app-id")?;
+    let (port, request) = attach_request(app, need(&m, "--app-port")?)?;
+    // Refuse to shadow an interface that is already on this port.
+    if listed_interfaces(addr).await?.iter().any(|(p, _, _)| *p == port) {
+        return Err("an app interface already exists on that port: refusing".into());
+    }
+    match admin_request(addr, request).await? {
+        AdminResponse::AppInterfaceAttached { port: got } if got == port => {}
+        _ => return Err("conductor did not attach the requested interface".into()),
+    }
+    // Read it back: the conductor must report exactly the requested binding.
+    let origin = interface_origin(port);
+    let ok = listed_interfaces(addr).await?.iter().any(|(p, o, a)|
+        *p == port && *o == origin && a.as_deref() == Some(app));
+    if !ok { return Err("attached interface does not read back as requested".into()); }
+    println!("attached app interface port={port} allowed_origins={origin} installed_app_id={app}");
+    Ok(())
+}
+
 async fn connect_lair(url: &str) -> Result<MetaLairClient, String> {
     if url.len() > 1024 || !url.starts_with("unix://") {
         return Err("only a local unix:// Lair URL is supported".into());
@@ -314,15 +414,19 @@ async fn run() -> Result<(), String> {
         }
         Some("write-policy") => write_policy(&args[1..]),
         Some("issue-app-token") => issue_app_token(&args[1..]).await,
+        Some("check-app-interfaces") => check_app_interfaces(&args[1..]).await,
+        Some("attach-app-interface") => attach_app_interface(&args[1..]).await,
         Some("propose-session") => propose_session(&args[1..]).await,
         _ => Err("usage: mpc-phase5b-bootstrap decode-hash <dna|agent|action> <b64> | write-policy ... | \
-                  issue-app-token ... --confirm-admin-token-issue | propose-session ... --confirm-source-chain-write \
+                  issue-app-token ... --confirm-admin-token-issue | check-app-interfaces ... | \
+                  attach-app-interface ... --confirm-admin-interface-attach | propose-session ... --confirm-source-chain-write \
                   (see docs/V040_PHASE5B_BOOTSTRAP.md)".into()),
     }
 }
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-phase5b-bootstrap", "usage: mpc-phase5b-bootstrap decode-hash | write-policy | issue-app-token | check-app-interfaces | attach-app-interface | propose-session\nWrites need an explicit --confirm-* flag. See docs/V040_PHASE5B_BOOTSTRAP.md.");
     if let Err(e) = run().await {
         eprintln!("FAIL: phase5b bootstrap: {e}");
         std::process::exit(1);
@@ -399,5 +503,44 @@ mod tests {
                 "--expiry-seconds", e, "--confirm-admin-token-issue"].iter().map(|s| s.to_string()).collect();
             assert!(rt.block_on(issue_app_token(&a)).unwrap_err().contains("expiry"));
         }
+    }
+
+    #[test]
+    fn app_interface_request_is_per_app_and_never_a_wildcard() {
+        let (port, request) = attach_request("mpc-phase5c", "8891").unwrap();
+        assert_eq!(port, 8891);
+        let AdminRequest::AttachAppInterface { port: p, danger_bind_addr, allowed_origins, installed_app_id } = request
+            else { panic!("wrong request") };
+        assert_eq!(p, Some(8891));
+        assert_eq!(danger_bind_addr, None, "must keep the conductor's loopback default");
+        assert_eq!(String::from(allowed_origins), "http://localhost:8891");
+        assert_eq!(installed_app_id.as_deref(), Some("mpc-phase5c"));
+        for (app, port) in [("", "8891"), ("a b", "8891"), ("a,b", "8891"), ("*", "8891"), ("a\n", "8891"),
+                            ("mpc", "0"), ("mpc", "65536"), ("mpc", "x"), (&"a".repeat(129), "8891")] {
+            assert!(attach_request(app, port).is_err(), "{app:?} {port}");
+        }
+    }
+
+    #[test]
+    fn interface_findings_flag_wildcards_and_unbound_interfaces() {
+        assert!(interface_findings(1, "http://localhost:1", Some("app"), Some("app")).is_empty());
+        assert!(interface_findings(1, "http://localhost:1", Some("app"), None).is_empty());
+        assert_eq!(interface_findings(1, "*", Some("app"), None).len(), 1);
+        assert_eq!(interface_findings(1, "http://localhost:1,*", Some("app"), None).len(), 1);
+        assert_eq!(interface_findings(1, "http://localhost:1", None, None).len(), 1);
+        assert_eq!(interface_findings(1, "*", None, None).len(), 2);
+        assert_eq!(interface_findings(1, "http://localhost:1", Some("other"), Some("app")).len(), 1);
+    }
+
+    #[test]
+    fn attach_requires_explicit_confirmation_before_any_connection() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let args: Vec<String> = ["--admin-port", "1", "--installed-app-id", "a", "--app-port", "2"]
+            .iter().map(|s| s.to_string()).collect();
+        assert!(rt.block_on(attach_app_interface(&args)).unwrap_err().contains("--confirm-admin-interface-attach"));
+        let mut wildcard = args.clone();
+        wildcard[3] = "*".into();
+        wildcard.push("--confirm-admin-interface-attach".into());
+        assert_eq!(rt.block_on(attach_app_interface(&wildcard)).unwrap_err(), "invalid installed app id");
     }
 }

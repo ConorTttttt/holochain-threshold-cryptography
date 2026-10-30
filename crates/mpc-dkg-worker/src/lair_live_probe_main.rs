@@ -115,6 +115,7 @@ async fn run() -> Result<(),String> {
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-lair-live-probe", "Read-only Lair and conductor probe. See docs/V040_LAIR_LIVE_PROBE_PHASE5B.md.");
     if let Err(message)=run().await {
         // No request bodies, private capabilities, signer signatures or
         // Lair errors are logged by the probe.

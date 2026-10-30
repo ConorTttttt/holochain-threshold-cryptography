@@ -1,0 +1,6 @@
+{
+  "name": "mpc-vault-ui",
+  "private": true,
+  "type": "module",
+  "description": "Static UI for the MPC vault service. No dependencies, no build step."
+}

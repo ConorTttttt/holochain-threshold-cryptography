@@ -732,6 +732,7 @@ async fn run() -> Result<(), String> {
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-phase5c-provision", "Capability provisioning, group activation and signing approvals. See docs/V040_PHASE5C_B_PROVISIONING.md and docs/V040_PHASE8_SIGNING.md.");
     if let Err(e) = run().await {
         eprintln!("FAIL: phase5c provisioning: {e}");
         std::process::exit(1);

@@ -181,5 +181,6 @@ async fn run()->Result<(),String> {
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-lair-signer", "Lair-backed signer service. See docs/V040_LAIR_SIGNER_PHASE5A.md.");
     if let Err(e)=run().await {eprintln!("FAIL: Lair signer: {e}");std::process::exit(1);}
 }

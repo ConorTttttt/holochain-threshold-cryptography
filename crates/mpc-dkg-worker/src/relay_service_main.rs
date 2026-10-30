@@ -123,6 +123,7 @@ async fn run() -> Result<(),String> {
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-relay-service", "DKG relay service. See docs/V040_RELAY_SERVICE_PHASE4.md.");
     if let Err(e)=run().await {
         eprintln!("FAIL: relay service terminated: {e}");
         eprintln!("The affected proposal must not be resumed after DKG admission.");

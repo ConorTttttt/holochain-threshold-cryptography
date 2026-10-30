@@ -1,3 +1,10 @@
+> **NOT PRODUCTION SOFTWARE. EXPERIMENTAL, UNAUDITED DEVELOPMENT SOURCE.**
+> Do not use it with real keys, funds, identities or secret shares. Custody is
+> development-grade (one OS user, no anti-rollback protection), no independent
+> audit has been done, and the persistent deployment evidence is incomplete.
+> This notice stays until the criteria in [`SECURITY.md`](SECURITY.md) are met
+> and independently confirmed. Threat model: [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
+
 # v0.4.0 Phase 3 candidate — automatic, fail-closed DKG relay engine
 
 Adds a ceremony-scoped `RelayEngine` that polls trusted Holochain inboxes, automatically

@@ -88,6 +88,7 @@ fn read_signed(path: &Path) -> Result<ZomeCallParamsSigned, String> {
 
 #[tokio::main]
 async fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-conductor-call", "Signed zome call through a loopback app interface. See docs/V040_SIGNED_ZOME_CALLS_PHASE2.md.");
     let result: Result<(), String> = async {
         let options = args()?;
         let node = pinned_context(&options.state).map_err(|e| e.to_string())?;

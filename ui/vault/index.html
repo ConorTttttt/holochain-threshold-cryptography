@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MPC Vault</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip" href="#view">Skip to content</a>
+<div class="banner" role="note">Development build. Devnet only. Not production custody.</div>
+<div class="banner example" id="mock-banner" role="note" hidden>EXAMPLE DATA. Not connected to a vault service. Nothing here is real.</div>
+<header class="top">
+  <strong class="brand">MPC Vault</strong>
+  <nav id="nav" aria-label="Main" hidden>
+    <a href="#/vaults" data-nav="vaults">Vaults</a>
+    <a href="#/proposals" data-nav="proposals">Proposals</a>
+    <a href="#/new" data-nav="new">New proposal</a>
+    <a href="#/activity" data-nav="activity">Activity</a>
+  </nav>
+  <span class="spacer"></span>
+  <button type="button" id="theme" aria-label="Switch colour theme">Theme</button>
+  <button type="button" id="disconnect" hidden>Disconnect</button>
+</header>
+<main id="view" tabindex="-1"></main>
+<div id="live" class="visually-hidden" role="status" aria-live="polite"></div>
+<script type="module" src="app.js"></script>
+<noscript><p class="banner">This page needs JavaScript. It makes no external requests.</p></noscript>
+</body>
+</html>

@@ -53,6 +53,13 @@ The network is an in-memory stand-in for authenticated zome responses, as in
 
 ## Limits that remain (Phase 7 is NOT complete for production)
 
+> **Update, 26 October 2026:** `V040_PHASE7_CUSTODY_HARDENING.md` adds
+> anti-rollback evidence (an authenticated custody chain plus an external
+> anchor), layout and key-source checks, encrypted backup and restore, and
+> retire/erase/retention. The limits below are kept as written on
+> 22 October. Read them together with that document's threat table and its
+> own limits. It is still not production custody.
+
 - **Same-UID custody.** The master key file, the journal and the worker share
   one Linux user. A compromised same-UID process can read the master key and
   open the share. Dedicated OS users or a hardware-backed key are required.

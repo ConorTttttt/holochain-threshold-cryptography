@@ -203,6 +203,10 @@ impl SigningSession {
         }
         let mut signer = ControlledSigner::new(binding.clone(), local, custody.key_package,
             &custody.public_key_package, active.clone()).map_err(|e| e.to_string())?;
+        // Phase 7 hardening: an anchored journal (from `recover_share`) must not
+        // have fallen behind its anti-rollback anchor while this node waited
+        // for approvals. No-op for an unanchored store.
+        store.check_anchor().map_err(|e| e.to_string())?;
         store.start_deadline(&binding.proposal_action, &plan.operation_id, deadline_ms)
             .map_err(|e| e.to_string())?;
         let own = signer.prepare(store, &approved, &plan.message, now_ms).map_err(|e| e.to_string())?;

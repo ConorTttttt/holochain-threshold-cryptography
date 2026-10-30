@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "note": "Hashes of a from-scratch offline build (scripts/release_check.py --record). integrity_wasm_sha256 and dna_hash are frozen by limitation L2; the other values change with any coordinator change and must be re-recorded after review.",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+  "hc": "holochain_cli 0.7.0",
+  "integrity_wasm_sha256": "2d6aa14170e4e1d40a78fc270d89a7534e943813b18811a66a84c88c6bb4ffdb",
+  "coordinator_wasm_sha256": "432d4d7d2e0244cad46c1c747f4fd2bdb2f9b15cf510218dd4a4b6ef8ee19614",
+  "dna_sha256": "7f77af71ba633536139f77702de1d8e74b77b8f437f33bf9328ec3856d7f7452",
+  "happ_sha256": "38efb4a9bcc3accd2eff2da0fbf451c8f1d981b366819d00c1eac52655bac1e5",
+  "dna_hash": "uhC0kp2jDNMx69W8JpT4jqkZR5XtHBKwdKcWneyb_judb2zoP6Mwu"
+}

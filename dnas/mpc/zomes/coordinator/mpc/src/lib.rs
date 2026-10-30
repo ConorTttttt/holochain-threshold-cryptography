@@ -1,8 +1,8 @@
 //! Reusable MPC coordination zome for Holochain 0.7.
 //! v0.2 deliberately DOES NOT execute any cryptographic protocol effects.
 use hdk::prelude::*;
-use holochain_mpc_core::{Envelope, ResultCommitment, SessionSpec, SealedPacket, MAX_MESSAGES_PER_SESSION};
-use holochain_mpc_adapter::{authenticate_incoming, ensure_local_member};
+use holochain_mpc_core::{Envelope, PrimitiveError, ResultCommitment, SessionSpec, SealedPacket, MAX_MESSAGES_PER_SESSION};
+use holochain_mpc_adapter::ensure_local_member;
 use mpc_integrity::*;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -11,10 +11,12 @@ fn guest(message: impl Into<String>) -> WasmError {
 }
 fn local_agent() -> ExternResult<AgentPubKey> { Ok(agent_info()?.agent_initial_pubkey) }
 
+const PROPOSAL_UNAVAILABLE: &str = "Session proposal unavailable";
+
 /// Binds membership to the *actual* valid proposal action, not caller-supplied metadata.
 fn load_proposal(proposal_hash: &ActionHash) -> ExternResult<SessionProposal> {
     let record = get(proposal_hash.clone(), GetOptions::default())?
-        .ok_or_else(|| guest("Session proposal unavailable"))?;
+        .ok_or_else(|| guest(PROPOSAL_UNAVAILABLE))?;
     let (zome_index, entry_index) = match record.action().entry_type() {
         Some(EntryType::App(AppEntryDef { zome_index, entry_index, .. })) => (*zome_index, *entry_index),
         _ => return Err(guest("Not an application entry")),
@@ -158,6 +160,115 @@ pub struct IncomingMessage {
     pub envelope: Envelope,
 }
 
+/// Stable failure kinds of the inbox externs. Every inbox refusal is a guest
+/// error whose text starts with `<code>: `, so a caller that only sees text
+/// (a remote sender always does) can still tell the conditions apart. No kind
+/// is advice to resend; see `send_protocol_message`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxFailure {
+    /// The slot already holds a different payload from this sender.
+    Conflict,
+    /// The authenticated sender has used its share of this inbox.
+    SenderQuota,
+    /// The inbox holds `MAX_MESSAGES_PER_SESSION` records.
+    Capacity,
+    /// The caller, sender, recipient or local agent is not entitled.
+    Unauthorized,
+    /// A malformed or out-of-context argument.
+    InvalidArgument,
+    /// The proposal is not available to this agent.
+    Missing,
+    /// The recipient's commit lost a chain-head race (`HeadMoved`).
+    WriteConflict,
+    /// A stored inbox record no longer validates against its session.
+    StoredRecordInvalid,
+    /// Storage, network or decoding failure.
+    Transport,
+}
+
+impl InboxFailure {
+    pub const ALL: [InboxFailure; 9] = [
+        Self::Conflict, Self::SenderQuota, Self::Capacity, Self::Unauthorized, Self::InvalidArgument,
+        Self::Missing, Self::WriteConflict, Self::StoredRecordInvalid, Self::Transport,
+    ];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Conflict => "inbox_conflict",
+            Self::SenderQuota => "inbox_sender_quota",
+            Self::Capacity => "inbox_capacity",
+            Self::Unauthorized => "inbox_unauthorized",
+            Self::InvalidArgument => "inbox_invalid_argument",
+            Self::Missing => "inbox_missing",
+            Self::WriteConflict => "inbox_write_conflict",
+            Self::StoredRecordInvalid => "inbox_stored_record_invalid",
+            Self::Transport => "inbox_transport",
+        }
+    }
+
+    /// The first kind named in an error text, and the byte offset of its code.
+    pub fn find(text: &str) -> Option<(Self, usize)> {
+        Self::ALL.iter()
+            .filter_map(|kind| text.find(&format!("{}: ", kind.code())).map(|at| (*kind, at)))
+            .min_by_key(|(_, at)| *at)
+    }
+}
+
+fn fail(kind: InboxFailure, detail: impl std::fmt::Display) -> WasmError {
+    guest(format!("{}: {detail}", kind.code()))
+}
+
+fn detail(error: &WasmError) -> String {
+    match &error.error {
+        WasmErrorInner::Guest(message) => message.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+fn envelope_failure(error: PrimitiveError) -> WasmError {
+    let kind = match error {
+        PrimitiveError::SenderNotMember | PrimitiveError::RecipientNotMember |
+        PrimitiveError::WrongRecipient | PrimitiveError::AuthenticatedSenderMismatch => InboxFailure::Unauthorized,
+        _ => InboxFailure::InvalidArgument,
+    };
+    fail(kind, error)
+}
+
+/// `require_local_member` (and, if asked, `require_fully_accepted`) with each
+/// failure tagged by kind.
+fn inbox_session(proposal: &ActionHash, accepted: bool) -> ExternResult<SessionSpec> {
+    let spec = load_proposal(proposal).map_err(|e| match &e.error {
+        WasmErrorInner::Guest(message) if message == PROPOSAL_UNAVAILABLE => fail(InboxFailure::Missing, message),
+        WasmErrorInner::Guest(message) => fail(InboxFailure::InvalidArgument, message),
+        _ => fail(InboxFailure::Transport, detail(&e)),
+    })?.spec;
+    ensure_local_member(&spec).map_err(|e| fail(InboxFailure::Unauthorized, detail(&e)))?;
+    if accepted {
+        require_fully_accepted(proposal, &spec).map_err(|e| match &e.error {
+            WasmErrorInner::Guest(message) => fail(InboxFailure::Unauthorized, message),
+            _ => fail(InboxFailure::Transport, detail(&e)),
+        })?;
+    }
+    Ok(spec)
+}
+
+/// Largest `get_inbox` response the native clients accept: both
+/// `conductor_client.rs` and the DKG relay refuse more than 4,096 envelopes.
+pub const MAX_SERVED_INBOX: usize = 4_096;
+/// Ceiling on one sender's share, whatever the session size.
+pub const MAX_INBOX_PER_SENDER: usize = 4_096;
+
+/// One authenticated sender's share of one recipient's inbox for one
+/// proposal: `MAX_SERVED_INBOX` split evenly between the other members, at
+/// most `MAX_INBOX_PER_SENDER`. 2,048 for a three-member session. The shares
+/// add up to at most `MAX_SERVED_INBOX`, so no sender can push a response past
+/// the clients' limit. Inbox records are never deleted, so the share is a
+/// budget for the life of the proposal, not a window.
+pub fn sender_quota(spec: &SessionSpec) -> usize {
+    let peers = spec.participants.len().saturating_sub(1).max(1);
+    (MAX_SERVED_INBOX / peers).clamp(1, MAX_INBOX_PER_SENDER)
+}
+
 fn inbox_records(proposal: &ActionHash) -> ExternResult<Vec<(ActionHash, InboxEvent)>> {
     let records = query(ChainQueryFilter::new()
         .entry_type(EntryType::App(UnitEntryTypes::InboxEvent.try_into()?))
@@ -170,6 +281,68 @@ fn inbox_records(proposal: &ActionHash) -> ExternResult<Vec<(ActionHash, InboxEv
         }
     }
     Ok(output)
+}
+
+/// One distinct stored payload of a slot, with every action that stores it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct StoredVariant {
+    pub envelope: Envelope,
+    pub storage_actions: Vec<ActionHash>,
+}
+
+/// A (sender, round, sequence) slot that `get_inbox` does not serve.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct WithheldSlot {
+    pub sender: Vec<u8>,
+    pub round: u32,
+    pub sequence: u64,
+    pub variants: Vec<StoredVariant>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct InboxSlots {
+    /// Exactly what `get_inbox` returns: one envelope per served slot.
+    pub envelopes: Vec<Envelope>,
+    /// Slots holding two or more distinct payloads: equivocation evidence.
+    /// A consumer whose operation reads one of these slots MUST abort it.
+    pub conflicts: Vec<WithheldSlot>,
+    /// Single-payload slots stored beyond the sender's share by concurrent
+    /// deliveries. Never served; a consumer waiting on one MUST abort.
+    pub over_quota: Vec<WithheldSlot>,
+}
+
+/// Splits inbox records, given in source-chain order, by slot. A slot with
+/// one distinct payload is served if its first record is among its sender's
+/// first `quota` records. Nothing is chosen between conflicting payloads, and
+/// no sender can have more than `quota` slots served. Both rules hold however
+/// the records were written, so the races in `receive_protocol_message`
+/// cannot reach a consumer.
+pub fn partition_inbox(records: impl IntoIterator<Item = (ActionHash, Envelope)>, quota: usize) -> InboxSlots {
+    struct Slot { first: usize, variants: Vec<StoredVariant> }
+    let mut per_sender: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+    let mut slots: BTreeMap<(Vec<u8>, u32, u64), Slot> = BTreeMap::new();
+    for (action, envelope) in records {
+        let count = per_sender.entry(envelope.sender.clone()).or_insert(0);
+        let index = *count;
+        *count += 1;
+        let slot = slots.entry((envelope.sender.clone(), envelope.round, envelope.sequence))
+            .or_insert_with(|| Slot { first: index, variants: Vec::new() });
+        match slot.variants.iter_mut().find(|v| v.envelope == envelope) {
+            Some(variant) => variant.storage_actions.push(action),
+            None => slot.variants.push(StoredVariant { envelope, storage_actions: vec![action] }),
+        }
+    }
+    let mut inbox = InboxSlots::default();
+    for ((sender, round, sequence), mut slot) in slots {
+        if slot.variants.len() == 1 && slot.first < quota {
+            inbox.envelopes.push(slot.variants.remove(0).envelope);
+        } else if slot.variants.len() > 1 {
+            inbox.conflicts.push(WithheldSlot { sender, round, sequence, variants: slot.variants });
+        } else {
+            inbox.over_quota.push(WithheldSlot { sender, round, sequence, variants: slot.variants });
+        }
+    }
+    inbox
 }
 
 /// Strictly forbid accidental plaintext DKG Round-2 transport for FROST.
@@ -189,30 +362,51 @@ fn require_sealed_dkg(spec: &SessionSpec, round: u32, payload: &[u8]) -> ExternR
 
 #[hdk_extern]
 pub fn receive_protocol_message(input: IncomingMessage) -> ExternResult<DeliveryReceipt> {
-    let spec = require_local_member(&input.proposal)?;
-    require_fully_accepted(&input.proposal, &spec)?;
-    // Never trust the sender identity in the untrusted envelope.
-    authenticate_incoming(&spec, &input.envelope)?;
-    require_sealed_dkg(&spec, input.envelope.round, &input.envelope.payload)?;
-    let recorded = inbox_records(&input.proposal)?;
+    let spec = inbox_session(&input.proposal, true)?;
+    // Never trust the sender identity in the untrusted envelope. This is
+    // `holochain_mpc_adapter::authenticate_incoming`, inline so that the
+    // refusal keeps its kind.
+    let caller = call_info().map_err(|e| fail(InboxFailure::Transport, detail(&e)))?.provenance;
+    let local = local_agent()?;
+    input.envelope.validate_received(&spec, local.get_raw_39(), caller.get_raw_39())
+        .map_err(envelope_failure)?;
+    require_sealed_dkg(&spec, input.envelope.round, &input.envelope.payload)
+        .map_err(|e| fail(InboxFailure::InvalidArgument, detail(&e)))?;
+    let recorded = inbox_records(&input.proposal).map_err(|e| fail(InboxFailure::Transport, detail(&e)))?;
     let current = &input.envelope;
+    let mut from_caller = 0;
+    let mut conflicting = false;
     for (hash, stored) in &recorded {
         let old = &stored.envelope;
+        // The share belongs to the authenticated caller, which
+        // `validate_received` has just matched to the envelope sender.
+        if old.sender.as_slice() == caller.get_raw_39() { from_caller += 1; }
         if old.sender == current.sender && old.round == current.round && old.sequence == current.sequence {
             if old == current {
                 return Ok(DeliveryReceipt { status: ReceiptStatus::AlreadyStored, storage_action: hash.clone() });
             }
-            return Err(guest("Conflicting payload for an existing sender/round/sequence"));
+            conflicting = true;
         }
     }
+    if conflicting {
+        return Err(fail(InboxFailure::Conflict,
+            "Conflicting payload for an existing sender/round/sequence; get_inbox withholds the slot"));
+    }
+    let quota = sender_quota(&spec);
+    if from_caller >= quota {
+        return Err(fail(InboxFailure::SenderQuota, format!(
+            "the sender already has {from_caller} messages in this inbox for this proposal; its share is {quota}")));
+    }
     if recorded.len() >= MAX_MESSAGES_PER_SESSION {
-        return Err(guest("Inbox capacity reached"));
+        return Err(fail(InboxFailure::Capacity, "Inbox capacity reached"));
     }
     // The zome has no cryptographic side effects. Persist BEFORE success reply.
-    // Concurrent calls can race on read-before-write: get_inbox deduplicates
-    // logically and reports conflicting duplicates as equivocation, while
-    // strict once-only crypto effects need a transactional local sidecar in
-    // v0.3 (see SECURITY.md).
+    // The checks above read the chain before this call writes, so concurrent
+    // calls can all pass them: a conflicting pair can both be stored, and a
+    // sender can exceed its share by about as many deliveries as it has in
+    // flight. `partition_inbox` applies both rules again on read, so neither
+    // reaches a consumer. Strict once-only crypto effects need a transactional
+    // local sidecar in v0.3 (see SECURITY.md).
     //
     // Relaxed chain-top ordering: peers deliver concurrently (every DKG round
     // fans in), and strict ordering failed all but one with HeadMoved. The
@@ -222,7 +416,8 @@ pub fn receive_protocol_message(input: IncomingMessage) -> ExternResult<Delivery
     let entry = EntryTypes::InboxEvent(InboxEvent { proposal: input.proposal, envelope: input.envelope });
     let ScopedEntryDefIndex { zome_index, zome_type } = (&entry).try_into()?;
     let action = create(CreateInput::new(EntryDefLocation::app(zome_index, zome_type),
-        EntryVisibility::from(&entry), entry.try_into()?, ChainTopOrdering::Relaxed))?;
+        EntryVisibility::from(&entry), entry.try_into()?, ChainTopOrdering::Relaxed))
+        .map_err(|e| fail(InboxFailure::Transport, detail(&e)))?;
     Ok(DeliveryReceipt { status: ReceiptStatus::Stored, storage_action: action })
 }
 
@@ -238,60 +433,96 @@ pub struct SendMessage {
     pub recipient_cap_secret: CapSecret,
 }
 
+/// Text for a remote delivery that came back as `NetworkError`. Holochain
+/// returns both a guest error from the recipient's zome and a commit that
+/// lost a chain-head race this way. Either means nothing was stored. Any
+/// other network text leaves the outcome unknown. Each text keeps the Stage 2B
+/// wording after the kind, for callers that match on it.
+pub fn remote_failure_message(network: &str) -> String {
+    if let Some((kind, at)) = InboxFailure::find(network) {
+        // The remote text is nested in escaped Debug output; stop at its end.
+        let remote: String = network[at + kind.code().len() + 2..].chars()
+            .take_while(|c| *c != '"' && *c != '\\').take(300).collect();
+        return format!("{}: Remote delivery not acknowledged: rejected by the recipient, not stored: {remote}",
+            kind.code());
+    }
+    // Holochain forwards the remote `CellError` in Debug form
+    // (`SourceChainError(HeadMoved(…`); match its Display text as well.
+    if network.contains("SourceChainError(HeadMoved(") || network.contains("source chain head has moved") {
+        return format!("{}: Remote delivery not acknowledged: the recipient's commit lost a chain-head race \
+            (HeadMoved), not stored", InboxFailure::WriteConflict.code());
+    }
+    format!("{}: Remote delivery not acknowledged: network: {}; outcome unknown",
+        InboxFailure::Transport.code(), network.chars().take(300).collect::<String>())
+}
+
 #[hdk_extern]
 pub fn send_protocol_message(input: SendMessage) -> ExternResult<DeliveryReceipt> {
-    let spec = require_local_member(&input.proposal)?;
-    require_fully_accepted(&input.proposal, &spec)?;
-    if input.recipient == local_agent()? { return Err(guest("Cannot send to self")); }
-    require_sealed_dkg(&spec, input.round, &input.payload)?;
+    let spec = inbox_session(&input.proposal, true)?;
+    let local = local_agent()?;
+    if input.recipient == local { return Err(fail(InboxFailure::InvalidArgument, "Cannot send to self")); }
+    require_sealed_dkg(&spec, input.round, &input.payload)
+        .map_err(|e| fail(InboxFailure::InvalidArgument, detail(&e)))?;
     let env = Envelope::new(
-        &spec, local_agent()?.get_raw_39().to_vec(),
+        &spec, local.get_raw_39().to_vec(),
         Some(input.recipient.get_raw_39().to_vec()),
         input.round, input.sequence, input.payload,
-    ).map_err(|e| guest(e.to_string()))?;
+    ).map_err(|e| fail(InboxFailure::InvalidArgument, e))?;
     let response = call_remote(
         input.recipient,
         zome_info()?.name,
         "receive_protocol_message".into(),
         Some(input.recipient_cap_secret),
         IncomingMessage { proposal: input.proposal, envelope: env },
-    )?;
+    ).map_err(|e| fail(InboxFailure::Transport, format!("remote call failed; outcome unknown: {}", detail(&e))))?;
+    // Name the failure kind and whether anything was stored, but never print
+    // `Unauthorized` Debug output: in Holochain 0.7.1 that variant carries the
+    // capability secret. The same message ID is idempotent at the recipient
+    // (AlreadyStored), but whether to resend is the caller's policy, not this
+    // function's.
     match response {
-        ZomeCallResponse::Ok(io) => io.decode().map_err(|e| guest(e.to_string())),
-        // Name the failure kind, but never print `Unauthorized` Debug output:
-        // in Holochain 0.7.1 that variant carries the capability secret. The
-        // same message ID is idempotent at the recipient (AlreadyStored), but
-        // whether to resend is the caller's policy, not this function's.
-        ZomeCallResponse::Unauthorized(..) =>
-            Err(guest("Remote delivery not acknowledged: unauthorized (capability rejected)")),
-        ZomeCallResponse::AuthenticationFailed(..) =>
-            Err(guest("Remote delivery not acknowledged: call signature not authenticated")),
-        ZomeCallResponse::NetworkError(e) => Err(guest(format!(
-            "Remote delivery not acknowledged: network: {}", e.chars().take(300).collect::<String>()))),
-        ZomeCallResponse::CountersigningSession(_) =>
-            Err(guest("Remote delivery not acknowledged: countersigning session")),
+        ZomeCallResponse::Ok(io) => io.decode().map_err(|e| fail(InboxFailure::Transport,
+            format!("undecodable delivery receipt; outcome unknown: {e}"))),
+        ZomeCallResponse::Unauthorized(..) => Err(fail(InboxFailure::Unauthorized,
+            "Remote delivery not acknowledged: unauthorized (capability rejected); not stored")),
+        ZomeCallResponse::AuthenticationFailed(..) => Err(fail(InboxFailure::Unauthorized,
+            "Remote delivery not acknowledged: call signature not authenticated; not stored")),
+        ZomeCallResponse::NetworkError(e) => Err(guest(remote_failure_message(&e))),
+        ZomeCallResponse::CountersigningSession(_) => Err(fail(InboxFailure::Transport,
+            "Remote delivery not acknowledged: countersigning session; outcome unknown")),
     }
 }
 
-/// Returns one logical envelope per ID, even if concurrent local writes raced.
-/// Does NOT execute the cryptographic protocol on the message.
+fn inbox_slots(proposal: &ActionHash) -> ExternResult<InboxSlots> {
+    let spec = inbox_session(proposal, false)?;
+    let local = local_agent()?;
+    let mut records = Vec::new();
+    for (action, event) in inbox_records(proposal).map_err(|e| fail(InboxFailure::Transport, detail(&e)))? {
+        // Every record passed `receive_protocol_message`, whose sender was
+        // authenticated then. One that no longer validates means the chain or
+        // the coordinator changed under it: refuse rather than guess.
+        let sender = event.envelope.sender.clone();
+        event.envelope.validate_received(&spec, local.get_raw_39(), &sender)
+            .map_err(|e| fail(InboxFailure::StoredRecordInvalid, e))?;
+        records.push((action, event.envelope));
+    }
+    Ok(partition_inbox(records, sender_quota(&spec)))
+}
+
+/// One envelope per served slot, ordered by (sender, round, sequence).
+/// Conflicting slots and slots beyond a sender's share are withheld, never
+/// chosen between: a consumer waiting on one sees nothing and fails at its
+/// deadline, and every other slot stays readable. `get_inbox_slots` returns
+/// the withheld slots as evidence. Does NOT execute the cryptographic protocol.
 #[hdk_extern]
 pub fn get_inbox(proposal: ActionHash) -> ExternResult<Vec<Envelope>> {
-    require_local_member(&proposal)?;
-    let spec = require_local_member(&proposal)?;
-    let mut distinct: BTreeMap<(Vec<u8>, u32, u64), Envelope> = BTreeMap::new();
-    for (_, event) in inbox_records(&proposal)? {
-        event.envelope.validate_against(&spec).map_err(|e| guest(e.to_string()))?;
-        let key = (event.envelope.sender.clone(), event.envelope.round, event.envelope.sequence);
-        if let Some(previous) = distinct.get(&key) {
-            if previous != &event.envelope {
-                return Err(guest("Equivocation: conflicting messages with the same ID"));
-            }
-        } else {
-            distinct.insert(key, event.envelope);
-        }
-    }
-    Ok(distinct.into_values().collect())
+    Ok(inbox_slots(&proposal)?.envelopes)
+}
+
+/// The served envelopes plus every withheld slot with all its stored variants.
+#[hdk_extern]
+pub fn get_inbox_slots(proposal: ActionHash) -> ExternResult<InboxSlots> {
+    inbox_slots(&proposal)
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -573,4 +804,127 @@ pub fn get_signing_approvals(proposal: ActionHash) -> ExternResult<Vec<SigningAp
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod inbox_tests {
+    use super::*;
+    use holochain_mpc_core::commitment;
+
+    fn member(i: u8) -> Vec<u8> { AgentPubKey::from_raw_36(vec![i; 36]).get_raw_39().to_vec() }
+    fn action(i: u8) -> ActionHash { ActionHash::from_raw_36(vec![i; 36]) }
+
+    fn spec(size: u8) -> SessionSpec {
+        let mut participants: Vec<Vec<u8>> = (1..=size).map(member).collect();
+        participants.sort();
+        SessionSpec {
+            session_id: commitment("unit", b"inbox"), application_id: "org.example.unit".into(),
+            protocol_id: "opaque-rounds".into(), protocol_version: 1,
+            context_hash: commitment("unit", b"context"), participants, threshold: 2, max_round: 8,
+        }
+    }
+
+    fn env(sender: u8, round: u32, sequence: u64, payload: &[u8]) -> Envelope {
+        Envelope::new(&spec(3), member(sender), Some(member(2)), round, sequence, payload.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn a_conflict_withholds_only_its_own_slot() {
+        let inbox = partition_inbox(vec![
+            (action(1), env(1, 1, 1, b"a")), (action(2), env(3, 1, 1, b"c")),
+            (action(3), env(1, 2, 1, b"left")), (action(4), env(1, 2, 1, b"right")),
+            (action(5), env(1, 3, 1, b"later")),
+        ], 2048);
+        assert_eq!(inbox.envelopes, vec![env(1, 1, 1, b"a"), env(1, 3, 1, b"later"), env(3, 1, 1, b"c")]);
+        assert_eq!(inbox.conflicts, vec![WithheldSlot { sender: member(1), round: 2, sequence: 1, variants: vec![
+            StoredVariant { envelope: env(1, 2, 1, b"left"), storage_actions: vec![action(3)] },
+            StoredVariant { envelope: env(1, 2, 1, b"right"), storage_actions: vec![action(4)] },
+        ] }]);
+        assert!(inbox.over_quota.is_empty());
+    }
+
+    #[test]
+    fn identical_copies_are_one_slot_and_keep_every_action() {
+        let inbox = partition_inbox(vec![
+            (action(1), env(1, 1, 1, b"a")), (action(2), env(1, 1, 1, b"a")), (action(3), env(1, 1, 1, b"b")),
+        ], 2048);
+        assert!(inbox.envelopes.is_empty());
+        assert_eq!(inbox.conflicts[0].variants[0].storage_actions, vec![action(1), action(2)]);
+        assert_eq!(partition_inbox(vec![(action(1), env(1, 1, 1, b"a")), (action(2), env(1, 1, 1, b"a"))], 2048)
+            .envelopes, vec![env(1, 1, 1, b"a")]);
+    }
+
+    #[test]
+    fn the_share_is_counted_per_sender_in_chain_order() {
+        let inbox = partition_inbox(vec![
+            (action(1), env(1, 1, 3, b"x")), (action(2), env(3, 1, 1, b"c")), (action(3), env(1, 1, 1, b"x")),
+            (action(4), env(1, 1, 2, b"x")), (action(5), env(3, 1, 2, b"c")),
+        ], 2);
+        // Alice's third record (sequence 2) is over her share; Carol's are not.
+        assert_eq!(inbox.envelopes, vec![env(1, 1, 1, b"x"), env(1, 1, 3, b"x"), env(3, 1, 1, b"c"), env(3, 1, 2, b"c")]);
+        assert_eq!(inbox.over_quota.len(), 1);
+        assert_eq!((inbox.over_quota[0].sequence, &inbox.over_quota[0].variants[0].storage_actions), (2, &vec![action(4)]));
+        // A duplicate past the share still serves the slot it duplicates.
+        let dup = partition_inbox(vec![(action(1), env(1, 1, 1, b"x")), (action(2), env(1, 1, 1, b"x"))], 1);
+        assert_eq!((dup.envelopes.len(), dup.over_quota.len()), (1, 0));
+    }
+
+    #[test]
+    fn a_variant_beyond_the_share_still_marks_a_conflict() {
+        let inbox = partition_inbox(vec![(action(1), env(1, 1, 1, b"a")), (action(2), env(1, 1, 1, b"b"))], 1);
+        assert!(inbox.envelopes.is_empty() && inbox.over_quota.is_empty());
+        assert_eq!(inbox.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn shares_never_exceed_what_clients_accept() {
+        assert_eq!(sender_quota(&spec(2)), 4096);
+        assert_eq!(sender_quota(&spec(3)), 2048);
+        assert_eq!(sender_quota(&spec(5)), 1024);
+        assert_eq!(sender_quota(&spec(64)), 65);
+        for size in 2..=64 {
+            let quota = sender_quota(&spec(size));
+            assert!(quota >= 1 && quota <= MAX_INBOX_PER_SENDER);
+            assert!((size as usize - 1) * quota <= MAX_SERVED_INBOX);
+            assert!((size as usize - 1) * quota <= MAX_MESSAGES_PER_SESSION);
+        }
+    }
+
+    #[test]
+    fn kind_codes_are_distinct_and_found_in_text() {
+        let codes: BTreeSet<&str> = InboxFailure::ALL.iter().map(|k| k.code()).collect();
+        assert_eq!(codes.len(), InboxFailure::ALL.len());
+        for kind in InboxFailure::ALL {
+            let text = format!("Guest(\"{}: detail\")", kind.code());
+            assert_eq!(InboxFailure::find(&text).map(|(k, _)| k), Some(kind));
+            assert_eq!(InboxFailure::find(&detail(&fail(kind, "x"))).map(|(k, _)| k), Some(kind));
+        }
+        assert_eq!(InboxFailure::find("inbox_conflict without a colon"), None);
+    }
+
+    #[test]
+    fn remote_failures_keep_their_kind_and_never_advise_resending() {
+        // The shape Holochain 0.7.1 produced in the Stage 2B run (baseline-run2 log).
+        let conflict = remote_failure_message("Other: invalid response to call_remote: ErrorRes { msg_id: 115, \
+            error: \"Other(WorkflowError(RibosomeError(WasmRuntimeError(RuntimeError { source: Sys(User(WasmError { \
+            module_path: \\\"mpc\\\", line: 10, error: Guest(\\\"inbox_conflict: Conflicting payload for an \
+            existing sender/round/sequence; get_inbox withholds the slot\\\") })), wasm_trace: [] }))))\" }");
+        assert_eq!(conflict, "inbox_conflict: Remote delivery not acknowledged: rejected by the recipient, not stored: \
+            Conflicting payload for an existing sender/round/sequence; get_inbox withholds the slot");
+        let quota = remote_failure_message("... inbox_sender_quota: the sender already has 2048 messages ...");
+        assert!(quota.starts_with("inbox_sender_quota: Remote delivery not acknowledged: rejected by the recipient, not stored"));
+        // As the 17 October coordinator's fan-in failed (test-inbox-hardening-strict log).
+        let head = remote_failure_message("Other: invalid response to call_remote: ErrorRes { msg_id: 7, error: \
+            \"Other(WorkflowError(SourceChainError(HeadMoved([SignedHashed { hashed: HoloHashed { … }]))))\" }");
+        assert!(head.starts_with("inbox_write_conflict: Remote delivery not acknowledged: the recipient's commit lost"));
+        assert!(head.ends_with("(HeadMoved), not stored"));
+        let display = remote_failure_message("Attempted to commit a bundle to the source chain, but the source chain head has moved since the bundle began.");
+        assert_eq!(display, head);
+        let unknown = remote_failure_message("timeout waiting for response");
+        assert!(unknown.starts_with("inbox_transport: Remote delivery not acknowledged: network: timeout"));
+        assert!(unknown.ends_with("; outcome unknown"));
+        for text in [conflict, quota, head, unknown] {
+            assert!(!text.to_lowercase().contains("retry") && !text.to_lowercase().contains("resend"), "{text}");
+        }
+    }
 }

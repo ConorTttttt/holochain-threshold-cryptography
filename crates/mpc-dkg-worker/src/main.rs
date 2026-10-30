@@ -7,6 +7,7 @@ use zeroize::Zeroize;
 
 const MAX_LINE: usize = 512 * 1024;
 fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-dkg-worker", "Test-only stdio worker; requires --test-authenticated-stdio. See docs/V036_AUTHENTICATED_NODE_IPC.md.");
     // Fail closed: there is no unauthenticated CLI fallback in v0.3.6.
     if std::env::args().nth(1).as_deref() != Some("--test-authenticated-stdio") {
         eprintln!("worker requires --test-authenticated-stdio (not for production)");

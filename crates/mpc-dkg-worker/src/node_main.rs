@@ -50,6 +50,7 @@ fn run() -> Result<(), String> {
     }
 }
 fn main() {
+    holochain_mpc_dkg_worker::notice::exit_on_help("mpc-node", "usage: mpc-node provision <dir> <agent-hex> <proposal-hex> <session-hex> | serve <dir> | transport-key-create <dir> <dna-hex> --confirm-local-key-write | transport-key-public <dir> <dna-hex>\nSee docs/V038_INDEPENDENT_NODE_SERVICE.md.");
     if let Err(error) = run() {
         eprintln!("mpc-node: {error}");
         std::process::exit(1);
