@@ -16,6 +16,8 @@ pub const MAX_SIGNED_CALL_BYTES: usize = 256 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MpcCall {
     GetInbox,
+    /// Required structured inbox read for native protocol consumers.
+    GetInboxSlots,
     /// Read-only status, authorized only by the opt-in probe signer.
     GetProbeSessionStatus,
     GetEncryptionKeyBindings,
@@ -33,6 +35,7 @@ impl MpcCall {
         match self {
             Self::GetProbeSessionStatus => "get_session_status",
             Self::GetInbox => "get_inbox",
+            Self::GetInboxSlots => "get_inbox_slots",
             Self::GetEncryptionKeyBindings => "get_encryption_key_bindings",
             Self::RegisterEncryptionKey => "register_encryption_key",
             Self::SendProtocolMessage => "send_protocol_message",
@@ -95,7 +98,7 @@ pub fn validate_signed_call(
         return Err("signed call targets another agent, cell or function".into());
     }
     match allowed {
-        MpcCall::GetInbox | MpcCall::GetEncryptionKeyBindings | MpcCall::GetProbeSessionStatus |
+        MpcCall::GetInbox | MpcCall::GetInboxSlots | MpcCall::GetEncryptionKeyBindings | MpcCall::GetProbeSessionStatus |
         MpcCall::GetGroupActivationAttestations | MpcCall::GetSigningApprovals => {
             if params.cap_secret.is_some() {
                 return Err("private-local read must not carry a capability secret".into());

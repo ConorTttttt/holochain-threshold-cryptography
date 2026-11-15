@@ -104,12 +104,12 @@ impl SigningSignerPolicy {
         let proposal = ActionHash::try_from_raw_39(self.binding.proposal_action.clone())
             .map_err(|_| "invalid pinned proposal")?;
         let (op, payload) = match req.operation.as_str() {
-            "get_inbox" | "get_group_activation_attestations" | "get_signing_approvals" => {
+            "get_inbox_slots" | "get_group_activation_attestations" | "get_signing_approvals" => {
                 if req.envelope.is_some() || req.public_key.is_some() || req.result.is_some() {
                     return Err("signing read carries write data".into());
                 }
                 let op = match req.operation.as_str() {
-                    "get_inbox" => MpcCall::GetInbox,
+                    "get_inbox_slots" => MpcCall::GetInboxSlots,
                     "get_group_activation_attestations" => MpcCall::GetGroupActivationAttestations,
                     _ => MpcCall::GetSigningApprovals,
                 };
@@ -223,7 +223,7 @@ mod tests {
     fn admits_reads_and_only_this_operations_frames() {
         let p = plan();
         let policy = SigningSignerPolicy::new(file(p.clone())).unwrap();
-        for op in ["get_inbox", "get_group_activation_attestations", "get_signing_approvals"] {
+        for op in ["get_inbox_slots", "get_group_activation_attestations", "get_signing_approvals"] {
             assert!(policy.authorize(&req(&p, op, None)).is_ok(), "{op}");
         }
         for op in ["publish_signing_approval", "publish_group_activation_attestation", "register_encryption_key",

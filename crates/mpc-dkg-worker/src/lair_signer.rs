@@ -118,7 +118,7 @@ impl SignerPolicy {
     pub fn authorize(&self, req: &SignerRequest) -> Result<(MpcCall, ZomeCallParams), String> {
         if req.version!=1 || req.binding!=self.binding {return Err("request not bound to this signer ceremony".into());}
         let op=match req.operation.as_str() {
-            "get_inbox"=>MpcCall::GetInbox,
+            "get_inbox_slots"=>MpcCall::GetInboxSlots,
             "get_encryption_key_bindings"=>MpcCall::GetEncryptionKeyBindings,
             "register_encryption_key"=>MpcCall::RegisterEncryptionKey,
             "send_protocol_message"=>MpcCall::SendProtocolMessage,
@@ -127,10 +127,10 @@ impl SignerPolicy {
         let proposal=ActionHash::try_from_raw_39(self.binding.proposal_action.clone())
             .map_err(|_|"invalid pinned proposal")?;
         let payload=match op {
-            MpcCall::GetProbeSessionStatus | MpcCall::GetGroupActivationAttestations |
+            MpcCall::GetInbox | MpcCall::GetProbeSessionStatus | MpcCall::GetGroupActivationAttestations |
             MpcCall::GetSigningApprovals | MpcCall::PublishResultCommitment =>
                 return Err("FROST DKG signer refuses probe- and signing-profile operations".into()),
-            MpcCall::GetInbox | MpcCall::GetEncryptionKeyBindings => {
+            MpcCall::GetInboxSlots | MpcCall::GetEncryptionKeyBindings => {
                 if req.envelope.is_some() || req.public_key.is_some() {
                     return Err("read request carries outbound data".into());
                 }
@@ -307,14 +307,14 @@ mod tests {
     #[test]
     fn exact_ceremony_and_allowlist_required() {
         let p=policy();
-        assert!(p.authorize(&req("get_inbox")).is_ok());
+        assert!(p.authorize(&req("get_inbox_slots")).is_ok());
         assert!(p.authorize(&req("get_encryption_key_bindings")).is_ok());
         assert!(p.authorize(&req("delete_entry")).is_err());
-        let mut wrong=req("get_inbox");wrong.binding.session_id=[8;32];
+        let mut wrong=req("get_inbox_slots");wrong.binding.session_id=[8;32];
         assert!(p.authorize(&wrong).is_err());
-        wrong=req("get_inbox");wrong.binding.installed_app_id="other".into();
+        wrong=req("get_inbox_slots");wrong.binding.installed_app_id="other".into();
         assert!(p.authorize(&wrong).is_err());
-        wrong=req("get_inbox");wrong.envelope=Some(holochain_mpc_core::Envelope {
+        wrong=req("get_inbox_slots");wrong.envelope=Some(holochain_mpc_core::Envelope {
             wire_version:1,session_id:[3;32],protocol_id:"frost-ed25519".into(),protocol_version:1,
             sender:binding().agent,recipient:None,round:1,sequence:1,
             payload_hash:holochain_mpc_core::commitment("envelope-payload",b"a"),payload:b"a".to_vec()});
@@ -323,8 +323,8 @@ mod tests {
     #[test]
     fn fresh_nonce_and_bounded_expiry() {
         let p=policy();
-        let (_,a)=p.authorize(&req("get_inbox")).unwrap();
-        let (_,b)=p.authorize(&req("get_inbox")).unwrap();
+        let (_,a)=p.authorize(&req("get_inbox_slots")).unwrap();
+        let (_,b)=p.authorize(&req("get_inbox_slots")).unwrap();
         let (bytes_a,_)=a.serialize_and_hash().unwrap();
         let (bytes_b,_)=b.serialize_and_hash().unwrap();
         assert_ne!(bytes_a,bytes_b);
