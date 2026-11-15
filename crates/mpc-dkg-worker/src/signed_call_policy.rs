@@ -271,6 +271,10 @@ mod tests {
         let pin = pin();
         let signed = make_call(&pin, "get_inbox", pin.node.proposal_action.clone());
         validate_signed_call(&pin, MpcCall::GetInbox, &signed).unwrap();
+        assert!(validate_signed_call(&pin, MpcCall::GetInboxSlots, &signed).is_err());
+        let slots = make_call(&pin, "get_inbox_slots", pin.node.proposal_action.clone());
+        validate_signed_call(&pin, MpcCall::GetInboxSlots, &slots).unwrap();
+        assert!(validate_signed_call(&pin, MpcCall::GetInbox, &slots).is_err());
         assert!(validate_signed_call(&pin, MpcCall::GetEncryptionKeyBindings, &signed).is_err());
         let other_action = ActionHash::from_raw_32(vec![0x87;32]);
         let other = make_call(&pin, "get_inbox", other_action.get_raw_39().to_vec());

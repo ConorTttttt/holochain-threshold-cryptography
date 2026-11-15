@@ -5,6 +5,8 @@
 //! authenticated zome responses, temporary databases. No conductor or Lair.
 use holochain_mpc_core::{commitment, Envelope, SessionSpec};
 use holochain_mpc_dkg_worker::conductor_bridge::KeyEvidence;
+use holochain_mpc_dkg_worker::inbox_slots::{InboxSlots, WithheldSlot, StoredVariant};
+use holochain_zome_types::prelude::ActionHash;
 use holochain_mpc_dkg_worker::ipc::{AuthChannel, ChannelContext, Role};
 use holochain_mpc_dkg_worker::relay::{LocalDkgNode, MpcTransport, Phase, RelayEngine, SendReceipt};
 use holochain_mpc_dkg_worker::signing::{activated_group, run_signing, signed_message, ActivationEvidence,
@@ -29,8 +31,9 @@ impl MpcTransport for Transport {
             author: self.local.clone(), action: action.clone(), public_key: key });
         Ok(action)
     }
-    async fn get_inbox(&mut self) -> Result<Vec<Envelope>,String> {
-        Ok(self.shared.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
+    async fn get_inbox_slots(&mut self) -> Result<InboxSlots,String> {
+        Ok(InboxSlots {envelopes:self.shared.lock().unwrap().inbox.get(&self.local)
+            .cloned().unwrap_or_default(),..Default::default()})
     }
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>,String> {
         Ok(self.shared.lock().unwrap().keys.clone())
@@ -139,6 +142,9 @@ struct SignNet {
     inbox: BTreeMap<Vec<u8>, Vec<Envelope>>,
     results: Vec<(Vec<u8>, SignedArtifact)>,
     tamper_shares: bool,
+    conflicts: BTreeMap<Vec<u8>,Vec<WithheldSlot>>,
+    late_conflict: Option<(Vec<u8>,usize,WithheldSlot)>,
+    read_counts: BTreeMap<Vec<u8>,usize>,
 }
 struct SignTransport { net: Arc<Mutex<SignNet>>, local: Vec<u8> }
 impl SigningTransport for SignTransport {
@@ -148,8 +154,19 @@ impl SigningTransport for SignTransport {
     async fn approvals(&mut self) -> Result<Vec<ApprovalEvidence>, String> {
         Ok(self.net.lock().unwrap().approvals.clone())
     }
-    async fn inbox(&mut self) -> Result<Vec<Envelope>, String> {
-        Ok(self.net.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
+    async fn inbox_slots(&mut self) -> Result<InboxSlots, String> {
+        let mut net=self.net.lock().unwrap();
+        let read={let n=net.read_counts.entry(self.local.clone()).or_default();*n+=1;*n};
+        let mut slots=InboxSlots {envelopes:net.inbox.get(&self.local).cloned().unwrap_or_default(),
+            conflicts:net.conflicts.get(&self.local).cloned().unwrap_or_default(),over_quota:vec![]};
+        if let Some((recipient,after,withheld))=&net.late_conflict {
+            if recipient==&self.local && read>=*after {
+                slots.envelopes.retain(|env| !(env.sender==withheld.sender &&
+                    env.round==withheld.round && env.sequence==withheld.sequence));
+                slots.conflicts.push(withheld.clone());
+            }
+        }
+        Ok(slots)
     }
     async fn publish(&mut self, env: &Envelope) -> Result<(), String> {
         let mut net = self.net.lock().unwrap();
@@ -174,6 +191,11 @@ impl SigningTransport for SignTransport {
     }
 }
 
+fn conflicting_slot(first:Envelope,second:Envelope)->WithheldSlot {
+    WithheldSlot {sender:first.sender.clone(),round:first.round,sequence:first.sequence,
+        variants:vec![StoredVariant {envelope:first,storage_actions:vec![ActionHash::from_raw_32(vec![91;32])]},
+            StoredVariant {envelope:second,storage_actions:vec![ActionHash::from_raw_32(vec![92;32])]}]}
+}
 struct Fixture { dir: tempfile::TempDir, binding: Binding, descriptor: GroupDescriptor }
 async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
@@ -282,6 +304,58 @@ async fn conflicting_approval_or_activation_fails_closed() {
     assert!(activated_group(&f.descriptor, &forged).is_err(), "attestation of another descriptor");
     forged[0].descriptor_hash = f.descriptor.digest().unwrap();
     assert!(activated_group(&f.descriptor, &forged).unwrap().is_none(), "partial activation waits");
+}
+
+#[tokio::test]
+async fn selected_signer_late_equivocation_aborts_and_burns_nonce() {
+    let f=fixture().await;
+    let net=Arc::new(Mutex::new(SignNet::default()));
+    let plan=f.plan(30,&[1,3]);
+    f.activate_all(&net);
+    for who in [1,3] {f.approve(&net,&plan,&[who]);}
+    // First poll accepts an authentic commitment from selected peer 3.
+    let mut peer=frost::Signer::new(f.binding.clone(),&[3;39],f.custody(&[3;39]).key_package).unwrap();
+    let frame=frost::Frame {proposal_action:f.binding.proposal_action.clone(),operation_id:plan.operation_id,
+        message:frost::Message::SigningCommitment(peer.commit(plan.operation_id,&plan.message).unwrap())};
+    let original=frame.encode(&f.binding,&[3;39],&[1;39],plan.sequence()).unwrap();
+    let mut variant=original.clone();variant.payload=b"equivocated signing commitment".to_vec();
+    variant.payload_hash=commitment("envelope-payload",&variant.payload);
+    net.lock().unwrap().inbox.entry(vec![1;39]).or_default().push(original.clone());
+    net.lock().unwrap().late_conflict=Some((vec![1;39],2,conflicting_slot(original,variant)));
+    let mut journal=store(f.dir.path(),&[1;39]);
+    let mut transport=SignTransport {net:net.clone(),local:vec![1;39]};
+    let error=run_signing(&mut transport,&mut journal,f.custody(&[1;39]),&[1;39],
+        plan.clone(),poll()).await.unwrap_err();
+    assert!(error.contains("conflicting authenticated signing"),"{error}");
+    assert!(journal.expire_at(&plan.descriptor.proposal_action,&plan.operation_id,1).unwrap(),
+        "late evidence abort must be durable; nonce must not be reusable");
+    assert!(net.lock().unwrap().results.is_empty());
+}
+
+#[tokio::test]
+async fn unrelated_signing_conflict_does_not_veto_selected_signers() {
+    let f=fixture().await;
+    let net=Arc::new(Mutex::new(SignNet::default()));
+    let plan=f.plan(31,&[1,3]);
+    f.activate_all(&net);
+    for who in [1,3] {f.approve(&net,&plan,&[who]);}
+    // Member 2 is not selected and cannot veto a valid 1+3 signature.
+    for recipient in [1_u8,3] {
+        let original=Envelope::new(&f.binding.spec,vec![2;39],Some(vec![recipient;39]),
+            4,plan.sequence(),b"unselected commitment".to_vec()).unwrap();
+        let mut variant=original.clone();variant.payload=b"unselected other commitment".to_vec();
+        variant.payload_hash=commitment("envelope-payload",&variant.payload);
+        net.lock().unwrap().conflicts.entry(vec![recipient;39]).or_default()
+            .push(conflicting_slot(original,variant));
+    }
+    let (mut s1,mut s3)=(store(f.dir.path(),&[1;39]),store(f.dir.path(),&[3;39]));
+    let mut t1=SignTransport {net:net.clone(),local:vec![1;39]};
+    let mut t3=SignTransport {net:net.clone(),local:vec![3;39]};
+    let (a1,a3)=tokio::join!(
+        run_signing(&mut t1,&mut s1,f.custody(&[1;39]),&[1;39],plan.clone(),poll()),
+        run_signing(&mut t3,&mut s3,f.custody(&[3;39]),&[3;39],plan,poll())
+    );
+    assert_eq!(a1.unwrap(),a3.unwrap());
 }
 
 // Security review 2026-10-22 R1: approval binds to the operator's own copy

@@ -308,6 +308,7 @@ mod tests {
     fn exact_ceremony_and_allowlist_required() {
         let p=policy();
         assert!(p.authorize(&req("get_inbox_slots")).is_ok());
+        assert!(p.authorize(&req("get_inbox")).is_err(), "legacy inbox is not a DKG signer operation");
         assert!(p.authorize(&req("get_encryption_key_bindings")).is_ok());
         assert!(p.authorize(&req("delete_entry")).is_err());
         let mut wrong=req("get_inbox_slots");wrong.binding.session_id=[8;32];

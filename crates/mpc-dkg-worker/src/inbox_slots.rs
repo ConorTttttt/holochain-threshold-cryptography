@@ -110,6 +110,12 @@ mod tests {
         StoredVariant {envelope:e,storage_actions:vec![ActionHash::from_raw_32(vec![i;32])]}
     }
     #[test]
+    fn old_coordinator_vector_reply_cannot_decode_as_structured_slots() {
+        let io=holochain_zome_types::prelude::ExternIO::encode(Vec::<Envelope>::new()).unwrap();
+        let decoded: Result<InboxSlots, _> = io.decode();
+        assert!(decoded.is_err(), "no legacy vector compatibility fallback");
+    }
+    #[test]
     fn structured_wire_round_trip_and_late_conflict() {
         let p=pin();let a=env(&p,b"a");let b=env(&p,b"b");
         let snapshot=InboxSlots {envelopes:vec![],conflicts:vec![WithheldSlot {

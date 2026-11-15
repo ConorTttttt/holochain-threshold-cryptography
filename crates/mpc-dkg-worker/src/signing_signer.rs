@@ -223,6 +223,7 @@ mod tests {
     fn admits_reads_and_only_this_operations_frames() {
         let p = plan();
         let policy = SigningSignerPolicy::new(file(p.clone())).unwrap();
+        assert!(policy.authorize(&req(&p, "get_inbox", None)).is_err());
         for op in ["get_inbox_slots", "get_group_activation_attestations", "get_signing_approvals"] {
             assert!(policy.authorize(&req(&p, op, None)).is_ok(), "{op}");
         }
