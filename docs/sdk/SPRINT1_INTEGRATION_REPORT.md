@@ -22,7 +22,11 @@ integration**, security attestation, deployment approval or release.
   with `docs/sdk/SPRINT1_SECURITY_REVIEW.md`. This independent **source-only**
   review reports **CHANGES REQUIRED** (8 new findings, including a High
   custody/layout blocker). It is **not integrated** and did not run tests.
-- Agents 2–3 patches/reports: **NOT RECEIVED** as of this update. No
+- Agent 2 opened draft PR #3 at `eb6e33c4b1f7d3d71e0cb2d01cd33b70eff88959`
+  with a new native `get_inbox_slots` client/relay/signing implementation;
+  its PR explicitly says Rust validation is **NOT YET VERIFIED**.
+  It is **not integrated**; late-equivocation and nonce tests remain unrun.
+- Agent 3 patch/report: **NOT RECEIVED** as of this update. No
   other-agent code has been integrated or tested together.
 
 ## Agent 5 delivered changes
@@ -45,7 +49,7 @@ existing `scripts/check_release.py` and `scripts/release_check.py` safety checks
 | Agent | Evidence / code available | Integration result |
 | --- | --- | --- |
 | 1 — Independent security reviewer | Draft PR #2 reports eight independent source-level findings: 1 High, 4 Medium, 3 Low | **REVIEW RECEIVED, NOT MERGED**; CHANGES REQUIRED; dynamic tests NOT RUN |
-| 2 — Coordinator/native inbox consumer | No Sprint 1 patch received | **NOT INTEGRATED**; late-equivocation rejection unverified |
+| 2 — Coordinator/native inbox consumer | Draft PR #3 contains 13 changed worker/test/doc paths | **NOT INTEGRATED**; native test execution NOT RUN |
 | 3 — DKG lifecycle and crash safety | No Sprint 1 patch received | **NOT INTEGRATED**; F1/F2 unresolved |
 | 4 — Public Rust SDK | Draft PR #1 offers read-only SDK files; workspace membership omitted | **NOT INTEGRATED**; SDK tests NOT RUN; live FROST status permission blocked |
 | 5 — CI / developer experience | CI config and docs proposed on Agent 5 branch | **PROPOSED, NOT CI-VALIDATED** |
@@ -74,7 +78,7 @@ test source was verified against blob SHA
 | `npm run test:sweettest` | **NOT RUN** | Holonix / `hc` and test conductors unavailable |
 | `npm run check:release` | **NOT RUN** | Fresh source build unavailable; prior Stage 2C identity failure recorded |
 | `scripts/phase6_faults.py` and signing fault rehearsals | **NOT RUN** | Disposable multi-conductor harness not provisioned |
-| GitHub Actions workflow | **NOT RUN** | Must confirm results from actual GitHub runner executions |
+| GitHub Actions PR #4 run `43771483501` (commit `bbfe2dd`) | **FAIL** | `static` and `native` jobs failed; `integration` and `release` skipped by design. Logs could not be retrieved (GitHub log endpoint returned 404), so the precise failure cause is **unknown**; no tests are claimed passing |
 
 The Stage 2C development report (`docs/V040_STAGE2C_COORDINATOR_HARDENING.md`)
 documents historical **153/153 native** and **11/11 Sweettest** results, plus
@@ -112,9 +116,11 @@ branch and are **not** represented above as Sprint 1 PASS results.
   compatibility and cross-application replay binding remain unvalidated.
 - Stage 2C changed coordinator WASM / `.dna` / `.happ`; approved hashes still
   identify Stage 2B artifacts. This **release gate remains open**.
-- GitHub runner disk/RAM availability and native Holonix provisioning are
-  unvalidated until a full workflow run. CI configuration alone is not a
-  passing reproducibility result.
+- GitHub Actions run `43771483501` completed **FAIL** in both PR jobs;
+  job-level summaries were available, but the log endpoint was 404 and no
+  failed command can be verified. Runner disk/RAM and Holonix provisioning
+  therefore remain unvalidated. A valid YAML file and four passing local
+  policy tests are not a passing GitHub workflow.
 
 ## Release control and operator action
 
@@ -127,7 +133,7 @@ There has been **no deployment or persistent-cell upgrade** in this work.
 
 ## Remaining integration work / Sprint 2 candidates
 
-1. Review Agents 1 and 4 draft PRs (#2 and #1), obtain Agents 2–3 patches,
+1. Review Agents 1, 2 and 4 draft PRs (#2, #3 and #1), obtain Agent 3 patch,
    map the independent eight findings to remediation owners and do not
    conflate them with the original seven unspecified findings.
 2. Integrate overlapping native worker changes only after security review;
@@ -136,7 +142,8 @@ There has been **no deployment or persistent-cell upgrade** in this work.
    disposable process-kill/restart scenarios.
 4. Bring in the SDK and update the approved workspace inventory only after
    the new manifest, lockfile and binary implications are reviewed.
-5. Execute PR native checks, push/manual Sweettests and fault rehearsals on
+5. Diagnose failed PR #4 workflow run `43771483501` using runner logs; then
+   execute PR native checks, push/manual Sweettests and fault rehearsals on
    the exact integrated commit, preserving exit codes and logs.
 6. Confirm rebuilt Stage 2C+ coordinator identities; obtain operator approval
    for any release-hash update and rerun the read-only release checks.
