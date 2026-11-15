@@ -68,6 +68,14 @@ impl ConductorBridge {
             delivered: BTreeMap::new() })
     }
 
+    /// Tear down both halves of the authenticated IPC connection when the
+    /// relay cannot continue. The native service then durably aborts a running
+    /// ceremony on EOF. If the service was killed instead, the existing
+    /// `running` tombstone still forbids resumption.
+    pub fn abort_connection(&mut self) -> Result<(), String> {
+        self.socket.shutdown(std::net::Shutdown::Both).map_err(|e| e.to_string())
+    }
+
     fn command(&mut self, cmd: Command) -> Result<Reply, String> {
         let frame = self.auth.seal(cmd)?;
         let data = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;

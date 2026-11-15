@@ -64,6 +64,10 @@ pub trait LocalDkgNode {
         -> Result<([u8;32], Vec<Envelope>), String>;
     fn finalize(&mut self) -> Result<GroupDescriptor, String>;
     fn validate_outbound(&self, outgoing: &[Envelope]) -> Result<(), String>;
+    /// Stop the associated worker on any unrecoverable transport failure.
+    /// The real IPC implementation closes its connection; tests may use a
+    /// different terminal mechanism. Do not retry ambiguous writes.
+    fn abort(&mut self) -> Result<(), String>;
 }
 
 impl LocalDkgNode for ConductorBridge {
@@ -78,6 +82,7 @@ impl LocalDkgNode for ConductorBridge {
     fn validate_outbound(&self, outgoing: &[Envelope]) -> Result<(), String> {
         ConductorBridge::validate_outbound(self, outgoing)
     }
+    fn abort(&mut self) -> Result<(), String> { ConductorBridge::abort_connection(self) }
 }
 
 pub struct RelayEngine<N, T> {
@@ -112,8 +117,22 @@ impl<N: LocalDkgNode, T: MpcTransport> RelayEngine<N, T> {
     pub fn transport_key(&self) -> Option<[u8;32]> { self.public_key }
     pub fn descriptor(&self) -> Option<&GroupDescriptor> { self.complete.as_ref() }
 
-    fn poison(&mut self, why: String) -> Result<TickReport, String> {
+    /// Irrevocably stop this relay and its native worker on a timeout,
+    /// shutdown, cancellation, partition, or protocol failure. This is also
+    /// valid when `start` was cancelled mid-await before the phase advanced.
+    pub fn abort(&mut self) -> Result<(), String> {
+        if self.phase == Phase::Complete {
+            return Err("cannot abort a locally completed DKG".into());
+        }
         self.phase = Phase::Aborted;
+        self.complete = None;
+        self.node.abort()
+    }
+
+    fn poison(&mut self, why: String) -> Result<TickReport, String> {
+        if let Err(close) = self.abort() {
+            return Err(format!("{why}; worker abort/disconnect failed: {close}"));
+        }
         Err(why)
     }
 
