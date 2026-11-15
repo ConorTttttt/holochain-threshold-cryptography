@@ -71,9 +71,13 @@ inventory until the change is reviewed and expressly approved.
 
 `.github/workflows/ci.yml` runs static and native jobs on PRs; pushing to
 `main` or `feature/v0.4.0-stage2c` also starts the slower ephemeral Holochain
-integration job. GitHub's **Run workflow** supports `quick`, `integration`,
-`release` and `all`. A manual release run performs a fresh offline WASM/DNA/hApp
-build and comparison against recorded approved hashes. Its failure is a
+integration job. The **Run workflow** selector supports `quick`, `integration`, `release`
+and `all` **once this workflow exists on the repository's default branch**;
+GitHub does not expose `workflow_dispatch` for an unmerged feature-only
+workflow. Until the reviewed workflow reaches `main`, use the documented
+local commands for release evidence, not a bypass or unapproved merge. A manual
+release run performs a fresh offline WASM/DNA/hApp build and comparison
+against recorded approved hashes. Its failure is a
 **blocking artifact-approval signal**, not something to suppress or auto-fix.
 The release logs are uploaded from `target/release-check-logs/`.
 
