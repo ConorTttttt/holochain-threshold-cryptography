@@ -98,7 +98,7 @@ test source was verified against blob SHA
 | `npm run test:sweettest` | **NOT RUN** | Holonix / `hc` and test conductors unavailable |
 | `npm run check:release` | **NOT RUN** | Fresh source build unavailable; prior Stage 2C identity failure recorded |
 | `scripts/phase6_faults.py` and signing fault rehearsals | **NOT RUN** | Disposable multi-conductor harness not provisioned |
-| GitHub Actions PR #4 run `43771483501` (commit `bbfe2dd`) | **FAIL** | `static` and `native` jobs failed; `integration` and `release` skipped by design. Logs could not be retrieved (GitHub log endpoint returned 404), so the precise failure cause is **unknown**; no tests are claimed passing |
+| GitHub Actions PR #4 run `43771483501` (commit `bbfe2dd`) | **FAIL** | `static` and `native` jobs failed; `integration` and `release` skipped by design. Both jobs completed in about two seconds with **zero steps** and no assigned runner name in GitHub's API. Logs could not be retrieved (404); likely a pre-execution runner/provisioning problem, **not proof any test command executed**. The precise failure cause is unknown |
 
 The Stage 2C development report (`docs/V040_STAGE2C_COORDINATOR_HARDENING.md`)
 documents historical **153/153 native** and **11/11 Sweettest** results, plus
@@ -140,9 +140,11 @@ branch and are **not** represented above as Sprint 1 PASS results.
 - Stage 2C changed coordinator WASM / `.dna` / `.happ`; approved hashes still
   identify Stage 2B artifacts. This **release gate remains open**.
 - GitHub Actions run `43771483501` completed **FAIL** in both PR jobs;
-  job-level summaries were available, but the log endpoint was 404 and no
-  failed command can be verified. Runner disk/RAM and Holonix provisioning
-  therefore remain unvalidated. A valid YAML file and four passing local
+  GitHub API shows **zero steps executed**, empty assigned runner names and
+  approximately two-second lifetimes. The log endpoint returned 404.
+  This suggests a pre-execution runner scheduling/provisioning problem,
+  but the actual cause is not confirmed. Runner disk/RAM and Holonix
+  provisioning therefore remain unvalidated. A valid YAML file and four passing local
   policy tests are not a passing GitHub workflow.
 
 ## Release control and operator action
@@ -166,7 +168,9 @@ There has been **no deployment or persistent-cell upgrade** in this work.
    disposable process-kill/restart scenarios.
 4. Bring in the SDK and update the approved workspace inventory only after
    the new manifest, lockfile and binary implications are reviewed.
-5. Diagnose failed PR #4 workflow run `43771483501` using runner logs; then
+5. Diagnose failed PR #4 workflow run `43771483501` (jobs have zero steps,
+   empty runner names and no retrievable logs), including repository Actions
+   permission/billing/runner eligibility and configuration; then
    execute PR native checks, push/manual Sweettests and fault rehearsals on
    the exact integrated commit, preserving exit codes and logs.
 6. Confirm rebuilt Stage 2C+ coordinator identities; obtain operator approval
