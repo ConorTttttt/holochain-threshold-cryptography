@@ -22,6 +22,8 @@ pub mod conductor_bridge;
 #[cfg(unix)]
 pub mod relay;
 #[cfg(unix)]
+pub mod inbox_slots;
+#[cfg(unix)]
 pub mod connection_policy;
 #[cfg(all(unix, feature = "conductor-client"))]
 pub mod conductor_client;

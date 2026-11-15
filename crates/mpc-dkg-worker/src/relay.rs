@@ -10,6 +10,7 @@
 //! transport error, equivocation, or IPC error ABORTS the entire relay. Do not
 //! resume the same ceremony, retry old signed bytes or reuse DKG randomness.
 use crate::conductor_bridge::{ConductorBridge, KeyEvidence};
+use crate::inbox_slots::InboxSlots;
 use holochain_mpc_core::{Envelope, SealedPacket};
 use holochain_mpc_frost_ed25519::Binding;
 use holochain_mpc_security::{BroadcastMessage, BoundBroadcastV2, Ceremony, EchoBroadcast};
@@ -49,7 +50,7 @@ fn key_roster_incomplete(binding: &Binding, keys: &[KeyEvidence]) -> bool {
 #[allow(async_fn_in_trait)]
 pub trait MpcTransport {
     async fn register_key(&mut self, public_key: [u8;32]) -> Result<Vec<u8>, String>;
-    async fn get_inbox(&mut self) -> Result<Vec<Envelope>, String>;
+    async fn get_inbox_slots(&mut self) -> Result<InboxSlots, String>;
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>, String>;
     async fn publish(&mut self, envelope: &Envelope) -> Result<SendReceipt, String>;
 }
@@ -229,7 +230,21 @@ impl<N: LocalDkgNode, T: MpcTransport> RelayEngine<N, T> {
             return Err("relay is not in an active polling phase".into());
         }
         let result: Result<(usize,usize),String> = async {
-            let messages = self.transport.get_inbox().await?;
+            let slots = self.transport.get_inbox_slots().await?;
+            // Detect new conflicts even for IDs already accepted on a prior poll.
+            for slot in &slots.conflicts {
+                if self.binding.spec.contains(&slot.sender) && slot.sender != self.local
+                    && (1..=3).contains(&slot.round) {
+                    return Err("conflicting authenticated DKG inbox slot".into());
+                }
+            }
+            for slot in &slots.over_quota {
+                if self.binding.spec.contains(&slot.sender) && slot.sender != self.local
+                    && (1..=3).contains(&slot.round) {
+                    return Err("required DKG inbox slot withheld over sender quota".into());
+                }
+            }
+            let messages = slots.envelopes;
             if messages.len() > MAX_INBOX { return Err("inbox exceeds relay limit".into()); }
             let mut batch = BTreeMap::new();
             for env in messages {

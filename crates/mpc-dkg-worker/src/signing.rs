@@ -13,6 +13,7 @@
 //! failure. Frame senders are the conductor-authenticated inbox provenance.
 //! Any inconsistency aborts; a new attempt needs a NEW operation id.
 use crate::ShareCustody;
+use crate::inbox_slots::{InboxSlots, WithheldSlot};
 use holochain_mpc_core::{commitment, Envelope};
 use holochain_mpc_frost_ed25519::{self as frost, AuthenticatedShareCollector, Binding,
     ControlledSigner, Frame, Message, SignedArtifact};
@@ -318,9 +319,16 @@ pub fn signed_message(plan: &SigningPlan) -> Result<Vec<u8>, String> {
 pub trait SigningTransport {
     async fn activations(&mut self) -> Result<Vec<ActivationEvidence>, String>;
     async fn approvals(&mut self) -> Result<Vec<ApprovalEvidence>, String>;
-    async fn inbox(&mut self) -> Result<Vec<Envelope>, String>;
+    async fn inbox_slots(&mut self) -> Result<InboxSlots, String>;
     async fn publish(&mut self, envelope: &Envelope) -> Result<(), String>;
     async fn publish_result(&mut self, artifact: &SignedArtifact) -> Result<(), String>;
+}
+
+/// Only approved selected signers and this operation's signing slots can
+/// terminate the operation. Unselected senders must not be able to veto it.
+fn relevant_signing_slot(slot: &WithheldSlot, plan: &SigningPlan, local: &[u8]) -> bool {
+    slot.sender != local && plan.selected.contains(&slot.sender)
+        && matches!(slot.round, 4 | 6) && slot.sequence == plan.sequence()
 }
 
 pub struct SigningPoll { pub interval: Duration, pub max_polls: u32 }
@@ -362,7 +370,7 @@ pub async fn run_signing<T: SigningTransport>(transport: &mut T, store: &mut Run
         store, start, start.saturating_add(budget_ms).saturating_add(60_000))?;
     let result = async {
         for env in &outbound { transport.publish(env).await?; }
-        let mut seen = BTreeSet::new();
+        let mut seen = BTreeMap::new();
         loop {
             if let Some(artifact) = session.artifact() {
                 let artifact = artifact.clone();
@@ -370,11 +378,28 @@ pub async fn run_signing<T: SigningTransport>(transport: &mut T, store: &mut Run
                 return Ok(artifact);
             }
             tick("signature")?;
-            let mut inbox = transport.inbox().await?;
+            let slots = transport.inbox_slots().await?;
+            // Check every snapshot before deduplication, including late conflict.
+            for slot in &slots.conflicts {
+                if relevant_signing_slot(slot, session.plan(), local) {
+                    return Err("conflicting authenticated signing inbox slot".into());
+                }
+            }
+            for slot in &slots.over_quota {
+                if relevant_signing_slot(slot, session.plan(), local) {
+                    return Err("required signing inbox slot withheld over sender quota".into());
+                }
+            }
+            let mut inbox = slots.envelopes;
             inbox.sort_by(|a, b| (a.round, &a.sender).cmp(&(b.round, &b.sender)));
             for env in inbox {
-                if !seen.insert((env.sender.clone(), env.round, env.sequence)) { continue; }
+                let id = (env.sender.clone(), env.round, env.sequence);
+                if let Some(previous) = seen.get(&id) {
+                    if previous != &env { return Err("previously accepted signing slot changed".into()); }
+                    continue;
+                }
                 for out in session.ingest(&env, store, now_ms())? { transport.publish(&out).await?; }
+                seen.insert(id, env);
             }
             if session.artifact().is_none() { tokio::time::sleep(poll.interval).await; }
         }
