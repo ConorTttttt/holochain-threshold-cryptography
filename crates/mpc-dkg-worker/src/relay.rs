@@ -64,6 +64,10 @@ pub trait LocalDkgNode {
         -> Result<([u8;32], Vec<Envelope>), String>;
     fn finalize(&mut self) -> Result<GroupDescriptor, String>;
     fn validate_outbound(&self, outgoing: &[Envelope]) -> Result<(), String>;
+    /// Stop the associated worker on any unrecoverable transport failure.
+    /// The real IPC implementation closes its connection; tests may use a
+    /// different terminal mechanism. Do not retry ambiguous writes.
+    fn abort(&mut self) -> Result<(), String>;
 }
 
 impl LocalDkgNode for ConductorBridge {
@@ -78,6 +82,7 @@ impl LocalDkgNode for ConductorBridge {
     fn validate_outbound(&self, outgoing: &[Envelope]) -> Result<(), String> {
         ConductorBridge::validate_outbound(self, outgoing)
     }
+    fn abort(&mut self) -> Result<(), String> { ConductorBridge::abort_connection(self) }
 }
 
 pub struct RelayEngine<N, T> {
@@ -114,6 +119,13 @@ impl<N: LocalDkgNode, T: MpcTransport> RelayEngine<N, T> {
 
     fn poison(&mut self, why: String) -> Result<TickReport, String> {
         self.phase = Phase::Aborted;
+        self.complete = None;
+        // Abort the real worker even when the error came from the conductor,
+        // not from an authenticated command. Failure to close cannot make the
+        // poisoned relay resumable: the on-disk admission marker is permanent.
+        if let Err(close) = self.node.abort() {
+            return Err(format!("{why}; worker abort/disconnect failed: {close}"));
+        }
         Err(why)
     }
 
