@@ -18,8 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: dkg-ci-${{ github.ref }}{-${{ github.event_name }}{
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}{
+  group: dkg-ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_BUILD_JOBS: "4"
@@ -123,7 +123,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-check-logs-${{ github.run_id }}{
+          name: release-check-logs-${{ github.run_id }}
           path: target/release-check-logs/
           if-no-files-found: warn
           retention-days: 14
