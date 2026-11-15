@@ -18,7 +18,11 @@ integration**, security attestation, deployment approval or release.
   `eaf24e6af2f77036cf7a8d61f6f432898a7f0657`; it proposes a read-only
   SDK facade. It intentionally does not add workspace membership, and its own
   report says Rust tests were **NOT RUN**. The PR is **not integrated**.
-- Agents 1–3 reports/patches: **NOT RECEIVED** as of this update. No
+- Agent 1 opened draft PR #2 at `969ee842e8d56452c6ecaccf091424ccfa3a280c`
+  with `docs/sdk/SPRINT1_SECURITY_REVIEW.md`. This independent **source-only**
+  review reports **CHANGES REQUIRED** (8 new findings, including a High
+  custody/layout blocker). It is **not integrated** and did not run tests.
+- Agents 2–3 patches/reports: **NOT RECEIVED** as of this update. No
   other-agent code has been integrated or tested together.
 
 ## Agent 5 delivered changes
@@ -40,7 +44,7 @@ existing `scripts/check_release.py` and `scripts/release_check.py` safety checks
 
 | Agent | Evidence / code available | Integration result |
 | --- | --- | --- |
-| 1 — Independent security reviewer | No Sprint 1 review report received | **NOT RUN**; independent sign-off required |
+| 1 — Independent security reviewer | Draft PR #2 reports eight independent source-level findings: 1 High, 4 Medium, 3 Low | **REVIEW RECEIVED, NOT MERGED**; CHANGES REQUIRED; dynamic tests NOT RUN |
 | 2 — Coordinator/native inbox consumer | No Sprint 1 patch received | **NOT INTEGRATED**; late-equivocation rejection unverified |
 | 3 — DKG lifecycle and crash safety | No Sprint 1 patch received | **NOT INTEGRATED**; F1/F2 unresolved |
 | 4 — Public Rust SDK | Draft PR #1 offers read-only SDK files; workspace membership omitted | **NOT INTEGRATED**; SDK tests NOT RUN; live FROST status permission blocked |
@@ -79,9 +83,22 @@ branch and are **not** represented above as Sprint 1 PASS results.
 
 ## Remaining security findings, compatibility and risks
 
-- Existing review baseline describes seven findings (1 High, 4 Medium, 2 Low),
-  but details require an independent Agent 1 report; severity totals alone
-  cannot establish remediation or exact scope.
+- The original checkpoint describes **seven** unlabelled findings
+  (1 High, 4 Medium, 2 Low); Agent 1's newly source-identified **eight**
+  (1 High, 4 Medium, 3 Low) in draft PR #2 are a separate register and
+  must **not** be equated to or assumed to close the original seven.
+- **S1-H01 (High, open):** default development custody writes decryption
+  material and software rollback anchor under the same state directory as
+  sealed shares. Real custody needs separately protected key source/anchor;
+  test-mode file permissions alone are insufficient.
+- **S1-M01 and S1-M02 (Medium, open):** native clients miss late inbox
+  conflicts; generic message envelopes lack exact app/context/proposal
+  binding. These block a multi-application SDK security claim.
+- **S1-M03 and S1-M04 (Medium):** permanent per-sender inbox quota imposes
+  rekey/expiry requirements; locally complete DKG is not global activation.
+  The independent reviewer found three additional Low issues concerning
+  operation-slot prefix collisions, relaxed-order receipt identities and
+  durable abort accounting.
 - **F1:** DKG can exit without durable abort; old running journal may remain.
 - **F2:** Local share completion may occur without full group activation.
 - Stage 2C introduces `get_inbox_slots`; native DKG/signing consumers still
@@ -110,7 +127,9 @@ There has been **no deployment or persistent-cell upgrade** in this work.
 
 ## Remaining integration work / Sprint 2 candidates
 
-1. Collect and independently review Agents 1–4 commits and their command logs.
+1. Review Agents 1 and 4 draft PRs (#2 and #1), obtain Agents 2–3 patches,
+   map the independent eight findings to remediation owners and do not
+   conflate them with the original seven unspecified findings.
 2. Integrate overlapping native worker changes only after security review;
    prove conflict isolation and fail-closed signing/DKG handling.
 3. Close or explicitly accept F1/F2 with tested lifecycle invariants and
