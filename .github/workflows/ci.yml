@@ -1,0 +1,129 @@
+name: DKG SDK CI
+
+on:
+  pull_request:
+    branches: [main, feature/v0.4.0-stage2c]
+  push:
+    branches: [main, feature/v0.4.0-stage2c]
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Suite to execute (release identity may fail until operator approval)"
+        type: choice
+        required: true
+        default: quick
+        options: [quick, integration, release, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dkg-ci-${{ github.ref }}{-${{ github.event_name }}{
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}{
+
+env:
+  CARGO_BUILD_JOBS: "4"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  static:
+    name: Inventory, versions and validator tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - name: Validate approved inventory without recording it
+        run: |
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            python3 -I scripts/check_holochain_versions.py
+            python3 -I scripts/check_release.py
+            npm run test:release-tools
+            git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+          '
+
+  native:
+    name: Rust and native protocol checks
+    if: github.event_name != 'workflow_dispatch' || inputs.suite == 'quick' || inputs.suite == 'all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Report pinned toolchain
+        run: |
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            rustc --version
+            cargo --version
+            hc --version
+            node --version
+          '
+      - name: Fetch dependencies from Cargo.lock
+        run: nix develop --no-write-lock-file --command cargo fetch --locked
+      - name: Check workspace, run native suite and SDK when present
+        run: |
+          mkdir -p /tmp/dkg-s1
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-s1
+            cargo check --offline --locked --workspace --all-targets
+            npm run test:native
+            cargo test --offline --locked -p holochain-mpc-dkg-worker --features conductor-client --lib
+            if test -f crates/holochain-dkg-sdk/Cargo.toml; then
+              cargo test --offline --locked -p holochain-dkg-sdk --all-targets
+            else
+              echo "NOT RUN: SDK crate is not yet on this branch"
+            fi
+            git diff --exit-code -- Cargo.lock
+          '
+
+  integration:
+    name: Ephemeral Holochain Sweettests
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'integration' || inputs.suite == 'all'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Fetch dependencies from Cargo.lock
+        run: nix develop --no-write-lock-file --command cargo fetch --locked
+      - name: Build test hApp and run coordinator, DKG and bridge Sweettests
+        run: |
+          mkdir -p /tmp/dkg-s1
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-s1 RUST_TEST_THREADS=1
+            npm run test:sweettest
+            cargo test --offline --locked -p mpc --test revoke_cap_grant -- --nocapture --test-threads=1
+            git diff --exit-code -- Cargo.lock
+          '
+
+  release:
+    name: Read-only release artifact validation (operator-gated)
+    if: github.event_name == 'workflow_dispatch' && (inputs.suite == 'release' || inputs.suite == 'all')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Fetch dependencies from Cargo.lock
+        run: nix develop --no-write-lock-file --command cargo fetch --locked
+      - name: Build fresh artifacts and compare to approved identities
+        run: |
+          mkdir -p /tmp/dkg-s1
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-s1
+            npm run check:release
+          '
+      - name: Confirm no approved identities were rewritten
+        if: always()
+        run: git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+      - name: Upload release validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-check-logs-${{ github.run_id }}{
+          path: target/release-check-logs/
+          if-no-files-found: warn
+          retention-days: 14
