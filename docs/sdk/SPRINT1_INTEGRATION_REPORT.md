@@ -14,8 +14,12 @@ integration**, security attestation, deployment approval or release.
   and does **not** include the Stage 2C worker and release-tool baseline.
 - Agent 5 candidate branch: `agents/sprint1-ci-sdk-testing`, forked from
   `122679a`. This is a **standalone review branch**, not an integrated merge.
-- Other-agent commits, patches and reports: **NOT RECEIVED** at the time of
-  this ledger. No other-agent code has been integrated or tested together.
+- Agent 4 opened draft PR #1, `agent4/sdk-foundation-stage2c` at
+  `eaf24e6af2f77036cf7a8d61f6f432898a7f0657`; it proposes a read-only
+  SDK facade. It intentionally does not add workspace membership, and its own
+  report says Rust tests were **NOT RUN**. The PR is **not integrated**.
+- Agents 1–3 reports/patches: **NOT RECEIVED** as of this update. No
+  other-agent code has been integrated or tested together.
 
 ## Agent 5 delivered changes
 
@@ -39,7 +43,7 @@ existing `scripts/check_release.py` and `scripts/release_check.py` safety checks
 | 1 — Independent security reviewer | No Sprint 1 review report received | **NOT RUN**; independent sign-off required |
 | 2 — Coordinator/native inbox consumer | No Sprint 1 patch received | **NOT INTEGRATED**; late-equivocation rejection unverified |
 | 3 — DKG lifecycle and crash safety | No Sprint 1 patch received | **NOT INTEGRATED**; F1/F2 unresolved |
-| 4 — Public Rust SDK | `crates/holochain-dkg-sdk/` absent on baseline | **NOT INTEGRATED**; SDK tests NOT RUN |
+| 4 — Public Rust SDK | Draft PR #1 offers read-only SDK files; workspace membership omitted | **NOT INTEGRATED**; SDK tests NOT RUN; live FROST status permission blocked |
 | 5 — CI / developer experience | CI config and docs proposed on Agent 5 branch | **PROPOSED, NOT CI-VALIDATED** |
 | 6 — Integration coordinator | Cannot complete without 1–4 and cross-branch testing | **BLOCKED** |
 
@@ -85,8 +89,10 @@ branch and are **not** represented above as Sprint 1 PASS results.
 - **R10-a:** relaxed chain ordering can yield a delivery receipt action hash
   that is not the final stored action. Verify the transport/consumer contract.
 - Holochain protocol is scoped to the pinned 0.7.1 family; `main` is older.
-  The SDK crate, API compatibility and cross-application replay binding
-  remain unvalidated.
+  Agent 4's draft SDK is not yet in the workspace. Its proposed native
+  FROST status read requires a separately reviewed signer authorisation
+  path; its write/activation/signing APIs remain unsupported. API
+  compatibility and cross-application replay binding remain unvalidated.
 - Stage 2C changed coordinator WASM / `.dna` / `.happ`; approved hashes still
   identify Stage 2B artifacts. This **release gate remains open**.
 - GitHub runner disk/RAM availability and native Holonix provisioning are
