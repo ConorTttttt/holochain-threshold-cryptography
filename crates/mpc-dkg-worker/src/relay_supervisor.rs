@@ -28,20 +28,40 @@ impl PollPolicy {
 #[allow(async_fn_in_trait)]
 pub trait RelayTicks {
     fn phase(&self) -> Phase;
+    fn abort(&mut self) -> Result<(), String>;
     async fn start(&mut self) -> Result<TickReport, String>;
     async fn poll_once(&mut self) -> Result<TickReport, String>;
 }
 
 impl<N: LocalDkgNode, T: MpcTransport> RelayTicks for RelayEngine<N, T> {
     fn phase(&self) -> Phase { RelayEngine::phase(self) }
+    fn abort(&mut self) -> Result<(), String> { RelayEngine::abort(self) }
     async fn start(&mut self) -> Result<TickReport, String> { RelayEngine::start(self).await }
     async fn poll_once(&mut self) -> Result<TickReport, String> { RelayEngine::poll_once(self).await }
 }
 
 /// Shutdown, signed-RPC uncertainty, poll timeout, or deadline exhaustion all
-/// terminate this process's ceremony. The caller must DROP the worker bridge,
-/// not retry its old proposal. A Completed result is the only success state.
+/// terminate this process's ceremony. Always abort the worker connection on
+/// failure, including cancellation mid-await, before returning an error.
+/// A Completed result is the only success state.
 pub async fn supervise<R, F>(relay: &mut R, policy: PollPolicy, shutdown: F) -> Result<(), String>
+where R: RelayTicks, F: Future<Output=()> {
+    match supervise_inner(relay, policy, shutdown).await {
+        Ok(()) => Ok(()),
+        Err(reason) => {
+            // Abort even if a timed-out `start` has not advanced Phase::New:
+            // Init might already have committed the write-ahead checkpoint.
+            if relay.phase() != Phase::Complete {
+                if let Err(close) = relay.abort() {
+                    return Err(format!("{reason}; worker abort/disconnect failed: {close}"));
+                }
+            }
+            Err(reason)
+        }
+    }
+}
+
+async fn supervise_inner<R, F>(relay: &mut R, policy: PollPolicy, shutdown: F) -> Result<(), String>
 where R: RelayTicks, F: Future<Output=()> {
     policy.validate()?;
     if relay.phase() != Phase::New { return Err("cannot supervise previously started relay".into()); }
@@ -91,6 +111,7 @@ mod tests {
     }
     impl RelayTicks for Dummy {
         fn phase(&self) -> Phase { self.phase }
+        fn abort(&mut self) -> Result<(), String> { self.phase = Phase::Aborted; Ok(()) }
         async fn start(&mut self) -> Result<TickReport, String> {
             self.starts.fetch_add(1, Ordering::SeqCst);
             self.phase=Phase::Echo;
