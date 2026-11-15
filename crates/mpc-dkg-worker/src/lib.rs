@@ -361,7 +361,7 @@ impl AuthenticatedController {
     /// Mark this controller unusable before attempting the journal transition.
     /// For a force-kill the method cannot run, but its `running` checkpoint
     /// still prevents any new controller from resuming old DKG secrets.
-    pub(crate) fn abort_on_disconnect(&mut self) -> Result<bool, String> {
+    pub fn abort_on_disconnect(&mut self) -> Result<bool, String> {
         self.dead = true;
         self.inner.poisoned = true;
         self.inner.active = None;
