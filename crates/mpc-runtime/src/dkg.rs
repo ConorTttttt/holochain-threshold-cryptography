@@ -138,6 +138,21 @@ impl RuntimeStore {
         Ok(())
     }
 
+    /// Close a started but unfinished ceremony after its controller/transport
+    /// disappears. Unlike `dkg_abort`, an unused listener connection creates
+    /// no tombstone; a completed share remains recoverable. A SIGKILL cannot
+    /// execute this hook: its durable `running` marker still forbids restart.
+    pub fn dkg_abort_running(&mut self, proposal: &[u8], owner: &[u8],
+                             session: &[u8;32]) -> RResult<bool> {
+        match self.dkg_checkpoint(proposal, owner, session)?.map(|r| r.state) {
+            Some(DkgState::Running) => {
+                self.dkg_abort(proposal, owner, session)?;
+                Ok(true)
+            }
+            Some(DkgState::Aborted | DkgState::Completed) | None => Ok(false),
+        }
+    }
+
     /// Permanently poison a started ceremony after any authenticated-controller
     /// failure. This also creates a durable tombstone for a rejected first
     /// command; such failures can intentionally deny progress on that proposal.
