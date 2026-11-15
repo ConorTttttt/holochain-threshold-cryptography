@@ -52,6 +52,10 @@ impl LocalPort {
     fn invoke(&mut self, cmd: Command) -> Result<Reply,String> { self.controller.handle(cmd) }
 }
 impl LocalDkgNode for LocalPort {
+    fn abort(&mut self) -> Result<(), String> {
+        self.controller = Controller::default(); // no persistent state in simulation
+        Ok(())
+    }
     fn initialize(&mut self) -> Result<([u8;32],Vec<Envelope>),String> {
         let Reply::Initialized { local_public_key, outbound } = self.invoke(
             Command::Init { binding:self.binding.clone(),local:self.id.clone() })? else {
