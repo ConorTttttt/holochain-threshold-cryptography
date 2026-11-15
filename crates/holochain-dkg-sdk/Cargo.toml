@@ -1,0 +1,20 @@
+[package]
+name = "holochain-dkg-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Application-facing, fail-closed Rust SDK foundation for Holochain FROST DKG"
+
+[features]
+default = []
+# Linux/Unix local conductor + operator-approved signer. Not a signing API.
+native-holochain = ["dep:holochain-mpc-dkg-worker", "dep:tokio"]
+
+[dependencies]
+holochain-mpc-core = { path = "../mpc-core" }
+holochain-mpc-security = { path = "../mpc-security" }
+holochain-mpc-dkg-worker = { path = "../mpc-dkg-worker", features = ["conductor-client"], optional = true }
+tokio = { version = "1", features = ["sync"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
