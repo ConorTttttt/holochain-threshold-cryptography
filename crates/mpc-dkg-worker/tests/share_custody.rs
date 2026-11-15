@@ -340,6 +340,54 @@ async fn shares_survive_sigkill_of_separate_worker_processes() {
     }
 }
 
+/// Crash injection after genuine FROST messages, not just synthetic journal
+/// writes. SIGKILL cannot write an abort record; the `running` tombstone is
+/// intentionally enough to deny all recovery/re-entry of that ceremony.
+#[tokio::test]
+async fn sigkill_after_round_one_two_or_three_is_permanently_nonresumable() {
+    for interrupted_phase in [Phase::Echo, Phase::Attest, Phase::Shares] {
+        let dir = tempfile::tempdir().unwrap();
+        let binding = binding();
+        let shared = Arc::new(Mutex::new(Network::default()));
+        let mut children = Vec::new();
+        let mut relays = Vec::new();
+        for member in &binding.spec.participants {
+            let (port, child) = ChildPort::spawn(&binding, member, &journal(dir.path(), member));
+            children.push(child);
+            relays.push(RelayEngine::new(port, Transport {
+                shared: shared.clone(), local: member.clone()
+            }, binding.clone(), member.clone()).unwrap());
+        }
+        for relay in &mut relays { relay.start().await.unwrap(); }
+        for _ in 0..20 {
+            if relays.iter().all(|r| r.phase() == interrupted_phase) { break; }
+            for relay in &mut relays {
+                if relay.phase() != interrupted_phase { relay.poll_once().await.unwrap(); }
+            }
+        }
+        assert!(relays.iter().all(|r| r.phase() == interrupted_phase),
+            "must reach the selected DKG interruption boundary");
+        children[0].kill().unwrap(); // no controller cleanup or graceful EOF
+        children[0].wait().unwrap();
+        let member = &binding.spec.participants[0];
+        let ctx = context(&binding, member);
+        let db = journal(dir.path(), member);
+        let store = RuntimeStore::open(&db, master(member)).unwrap();
+        let checkpoint = store.dkg_checkpoint(&ctx.proposal_action, member,
+            &ctx.session_id).unwrap().unwrap();
+        assert_eq!(checkpoint.state, holochain_mpc_runtime::dkg::DkgState::Running);
+        assert!(checkpoint.revision >= 1);
+        drop(store);
+        assert!(AuthenticatedController::new_durable([member[0];32], ctx, &db,
+            master(member)).is_err(), "killed round cannot reopen the proposal");
+        for child in children.iter_mut().skip(1) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        drop(relays);
+    }
+}
+
 #[test]
 fn aborted_ceremony_seals_nothing_recoverable() {
     let dir = tempfile::tempdir().unwrap();
