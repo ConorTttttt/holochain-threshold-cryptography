@@ -143,6 +143,7 @@ struct SignNet {
     results: Vec<(Vec<u8>, SignedArtifact)>,
     tamper_shares: bool,
     conflicts: BTreeMap<Vec<u8>,Vec<WithheldSlot>>,
+    over_quota: BTreeMap<Vec<u8>,Vec<WithheldSlot>>,
     late_conflict: Option<(Vec<u8>,usize,WithheldSlot)>,
     read_counts: BTreeMap<Vec<u8>,usize>,
 }
@@ -158,7 +159,8 @@ impl SigningTransport for SignTransport {
         let mut net=self.net.lock().unwrap();
         let read={let n=net.read_counts.entry(self.local.clone()).or_default();*n+=1;*n};
         let mut slots=InboxSlots {envelopes:net.inbox.get(&self.local).cloned().unwrap_or_default(),
-            conflicts:net.conflicts.get(&self.local).cloned().unwrap_or_default(),over_quota:vec![]};
+            conflicts:net.conflicts.get(&self.local).cloned().unwrap_or_default(),
+            over_quota:net.over_quota.get(&self.local).cloned().unwrap_or_default()};
         if let Some((recipient,after,withheld))=&net.late_conflict {
             if recipient==&self.local && read>=*after {
                 slots.envelopes.retain(|env| !(env.sender==withheld.sender &&
@@ -329,6 +331,27 @@ async fn selected_signer_late_equivocation_aborts_and_burns_nonce() {
     assert!(error.contains("conflicting authenticated signing"),"{error}");
     assert!(journal.expire_at(&plan.descriptor.proposal_action,&plan.operation_id,1).unwrap(),
         "late evidence abort must be durable; nonce must not be reusable");
+    assert!(net.lock().unwrap().results.is_empty());
+}
+
+#[tokio::test]
+async fn selected_signing_over_quota_slot_fails_closed() {
+    let f=fixture().await;
+    let net=Arc::new(Mutex::new(SignNet::default()));
+    let plan=f.plan(32,&[1,3]);
+    f.activate_all(&net);
+    for who in [1,3] {f.approve(&net,&plan,&[who]);}
+    let env=Envelope::new(&f.binding.spec,vec![3;39],Some(vec![1;39]),
+        6,plan.sequence(),b"withheld share".to_vec()).unwrap();
+    net.lock().unwrap().over_quota.entry(vec![1;39]).or_default().push(WithheldSlot {
+        sender:env.sender.clone(),round:env.round,sequence:env.sequence,
+        variants:vec![StoredVariant {envelope:env,
+            storage_actions:vec![ActionHash::from_raw_32(vec![42;32])]}]});
+    let mut journal=store(f.dir.path(),&[1;39]);
+    let mut transport=SignTransport {net:net.clone(),local:vec![1;39]};
+    let error=run_signing(&mut transport,&mut journal,f.custody(&[1;39]),&[1;39],
+        plan.clone(),poll()).await.unwrap_err();
+    assert!(error.contains("over sender quota"),"{error}");
     assert!(net.lock().unwrap().results.is_empty());
 }
 
