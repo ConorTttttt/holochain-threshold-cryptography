@@ -23,6 +23,7 @@ integration**, security attestation, deployment approval or release.
 | --- | --- |
 | `.github/workflows/ci.yml` | PR static/native checks; push/manual ephemeral Sweettests; explicit manual release identity gate |
 | `flake.nix` | Provision PyYAML with pinned Nix Python for existing release validators |
+| `scripts/tests/test_ci_workflow.py` | Four offline regression tests for workflow event routing, Bash syntax, SDK NOT RUN and no automatic release approval |
 | `docs/sdk/TESTING.md` | Layer-by-layer command matrix, approval rules, evidence requirements |
 | `docs/sdk/DEVELOPMENT.md` | Reproducible developer entry points, SDK expectations and custody boundaries |
 | `docs/sdk/SPRINT1_INTEGRATION_REPORT.md` | This honest integration ledger |
@@ -48,10 +49,15 @@ GitHub repository metadata, branch list, tracked paths, manifests and
 existing test/release scripts were inspected via the GitHub connection.
 That is **source inspection**, not compilation or a passing test suite.
 The environment used for this inspection does not provide `cargo`, `rustc`,
-`nix` or `hc`, and direct Git cloning has no DNS access.
+`nix` or `hc`, and direct Git cloning has no DNS access. An exact local copy
+of the workflow was verified against the GitHub blob SHA
+`1cbaca6f94b9f2af0ec28f60b813a0adf33e14bf`; the offline workflow-policy
+test source was verified against blob SHA
+`4c0b9806922c2a84cb6690552c3c669e9f838b5c`.
 
 | Command or suite | Status | Explanation |
 | --- | --- | --- |
+| `python3 -m unittest discover -s scripts/tests -p test_ci_workflow.py -v` | **PASS** | Executed locally on blob-identical workflow and test source: 4 tests OK (YAML/event policy, no record/deploy, SDK NOT RUN, Bash syntax); not a runner test |
 | `cargo check --offline --locked --workspace --all-targets` | **NOT RUN** | Rust toolchain unavailable |
 | `python3 -I scripts/check_release.py` | **NOT RUN** | Full private repo not locally checked out |
 | `npm run test:release-tools` | **NOT RUN** | Full private repo not locally checked out |
