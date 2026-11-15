@@ -50,6 +50,9 @@ impl DurablePort {
     }
 }
 impl LocalDkgNode for DurablePort {
+    fn abort(&mut self) -> Result<(), String> {
+        self.worker.abort_on_disconnect().map(|_| ())
+    }
     fn initialize(&mut self) -> Result<([u8;32],Vec<Envelope>),String> {
         let Reply::Initialized { local_public_key, outbound } = self.invoke(
             Command::Init { binding: self.binding.clone(), local: self.id.clone() })? else {
