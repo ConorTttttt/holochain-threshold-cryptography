@@ -131,7 +131,8 @@ impl TryFrom<NativeGroupDescriptor> for PublicGroupDescriptor {
     type Error = SdkError;
     fn try_from(d: NativeGroupDescriptor) -> Result<Self, Self::Error> {
         d.validate().map_err(|_| SdkError::InvalidResponse("invalid native group descriptor"))?;
-        if d.spec.protocol_id != "frost-ed25519" || d.spec.protocol_version != 1 {
+        if d.spec.protocol_id != "frost-ed25519" || d.spec.protocol_version != 1 ||
+            d.spec.threshold < 2 || d.spec.participants.len() < 2 || d.spec.max_round < 6 {
             return Err(SdkError::InvalidResponse("unsupported group protocol"));
         }
         let digest = d.digest().map_err(|_| SdkError::InvalidResponse("invalid descriptor digest"))?;
@@ -288,6 +289,7 @@ impl<B: DkgBackend> DkgSdk<B> {
         raw.spec.validate().map_err(|_|
             SdkError::InvalidResponse("invalid session specification"))?;
         if raw.spec.protocol_id != "frost-ed25519" || raw.spec.protocol_version != 1 ||
+           raw.spec.threshold < 2 || raw.spec.participants.len() < 2 || raw.spec.max_round < 6 ||
            raw.spec.application_id != self.config.application_id {
             return Err(SdkError::InvalidResponse("wrong application or protocol"));
         }
@@ -398,6 +400,9 @@ mod tests {
         assert!(sdk(bad).group_status(ceremony()).await.is_err());
         let mut bad = status(&[], false);
         bad.spec.protocol_id = "other-protocol".into();
+        assert!(sdk(bad).group_status(ceremony()).await.is_err());
+        let mut bad = status(&[], false);
+        bad.spec.max_round = 3;
         assert!(sdk(bad).group_status(ceremony()).await.is_err());
     }
 
