@@ -5,6 +5,8 @@
 use holochain_mpc_core::{commitment, Envelope, SessionSpec};
 use holochain_mpc_dkg_worker::conductor_bridge::KeyEvidence;
 use holochain_mpc_dkg_worker::relay::{LocalDkgNode, MpcTransport, Phase, RelayEngine, SendReceipt};
+use holochain_mpc_dkg_worker::relay_supervisor::{supervise, PollPolicy};
+use std::time::Duration;
 use holochain_mpc_dkg_worker::{Command, Controller, PeerKeyBinding, Reply};
 use holochain_mpc_frost_ed25519::Binding;
 use holochain_mpc_security::activation::GroupDescriptor;
@@ -222,4 +224,25 @@ async fn forked_key_registration_aborts() {
     }
     assert!(aborted && parties.iter().all(|p| p.phase() != Phase::Complete),
         "a forked registration must never reach Round 2");
+}
+
+#[tokio::test]
+async fn network_partition_exhausts_poll_budget_and_aborts_without_retry() {
+    let binding = make_binding();
+    // One participant is isolated after it publishes Round-1 announcements.
+    // It sees no peer echoes. The supervisor must close the worker rather than
+    // returning with a live, resumable relay after deadline exhaustion.
+    let network = Arc::new(Mutex::new(Network::default()));
+    let mut isolated = make_relay(&binding, 1, network.clone());
+    let result = supervise(&mut isolated, PollPolicy {
+        interval: Duration::from_millis(100),
+        rpc_deadline: Duration::from_secs(1),
+        max_polls: 1,
+    }, std::future::pending()).await;
+    assert!(result.unwrap_err().contains("poll budget"));
+    assert_eq!(isolated.phase(), Phase::Aborted);
+    assert!(isolated.descriptor().is_none());
+    assert!(isolated.poll_once().await.is_err());
+    // No synthetic transport retry can complete the poisoned original relay.
+    assert_eq!(network.lock().unwrap().keys.len(), 1);
 }
