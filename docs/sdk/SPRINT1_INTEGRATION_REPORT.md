@@ -26,7 +26,11 @@ integration**, security attestation, deployment approval or release.
   with a new native `get_inbox_slots` client/relay/signing implementation;
   its PR explicitly says Rust validation is **NOT YET VERIFIED**.
   It is **not integrated**; late-equivocation and nonce tests remain unrun.
-- Agent 3 patch/report: **NOT RECEIVED** as of this update. No
+- Agent 3 opened draft PR #5, `sprint1/agent3-dkg-lifecycle` at
+  `ec0176c0e4dbc19459dec3ef6516e02ba6c80198`, proposing durable
+  abort-on-disconnect and F2 non-activation regressions. Its PR reports
+  **NOT RUN** for Rust tests; it is **not integrated**.
+- Agent 2 and Agent 3 change four overlapping worker paths. No
   other-agent code has been integrated or tested together.
 
 ## Agent 5 delivered changes
@@ -50,10 +54,26 @@ existing `scripts/check_release.py` and `scripts/release_check.py` safety checks
 | --- | --- | --- |
 | 1 — Independent security reviewer | Draft PR #2 reports eight independent source-level findings: 1 High, 4 Medium, 3 Low | **REVIEW RECEIVED, NOT MERGED**; CHANGES REQUIRED; dynamic tests NOT RUN |
 | 2 — Coordinator/native inbox consumer | Draft PR #3 contains 13 changed worker/test/doc paths | **NOT INTEGRATED**; native test execution NOT RUN |
-| 3 — DKG lifecycle and crash safety | No Sprint 1 patch received | **NOT INTEGRATED**; F1/F2 unresolved |
+| 3 — DKG lifecycle and crash safety | Draft PR #5 proposes durable F1 abort and F2 partial-activation tests | **NOT INTEGRATED**; authored tests NOT RUN; F1/F2 not closed |
 | 4 — Public Rust SDK | Draft PR #1 offers read-only SDK files; workspace membership omitted | **NOT INTEGRATED**; SDK tests NOT RUN; live FROST status permission blocked |
 | 5 — CI / developer experience | CI config and docs proposed on Agent 5 branch | **PROPOSED, NOT CI-VALIDATED** |
 | 6 — Integration coordinator | Cannot complete without 1–4 and cross-branch testing | **BLOCKED** |
+
+## Cross-branch overlap inspection
+
+Draft PR #3 (Agent 2) and PR #5 (Agent 3) both modify:
+
+| Shared path | Agent 2 changes | Agent 3 changes | Integration action |
+| --- | --- | --- | --- |
+| `crates/mpc-dkg-worker/src/lib.rs` | New inbox-slot module export | Authenticated controller terminal abort on disconnect | Reconcile API and worker lifecycle; review errors and custody state |
+| `crates/mpc-dkg-worker/src/relay.rs` | `MpcTransport::get_inbox_slots`; fail-closed DKG conflict inspection | `LocalDkgNode::abort`, relay abort/poison, transport disconnect handling | Preserve both fail-closed paths and ensure conflicting inbox cannot bypass journal abort |
+| `crates/mpc-dkg-worker/tests/relay_simulation.rs` | Structured inbox fixtures and late-equivocation regressions | Relay error/timeout/partition-abort regression | Combine mock trait implementations and rerun both classes of tests |
+| `crates/mpc-dkg-worker/tests/signing_session.rs` | Structured signing inbox fixtures and nonce-burning late-conflict tests | Controller disconnect mock plus incomplete-group signing test | Combine mocks, verify no nonce use after either abort path |
+
+These file overlaps were verified from PR #3 and #5 GitHub patch hunks,
+not from a local merged tree. The hunks target mostly different locations,
+but compilation, trait completeness, state invariants and actual conflict-free
+integration are **NOT VERIFIED**. No automatic merge was attempted.
 
 ## Verification log
 
@@ -103,8 +123,11 @@ branch and are **not** represented above as Sprint 1 PASS results.
   The independent reviewer found three additional Low issues concerning
   operation-slot prefix collisions, relaxed-order receipt identities and
   durable abort accounting.
-- **F1:** DKG can exit without durable abort; old running journal may remain.
-- **F2:** Local share completion may occur without full group activation.
+- **F1:** DKG can exit without durable abort; PR #5 proposes abort-on-disconnect
+  but no runtime or fault-injection test has executed on that code.
+- **F2:** Local share completion may occur without full group activation;
+  PR #5 proposes a fail-closed signing regression, but cannot turn local
+  completion into unanimous activation evidence.
 - Stage 2C introduces `get_inbox_slots`; native DKG/signing consumers still
   require verified conflict-metadata handling and late-equivocation policy.
 - **R10-a:** relaxed chain ordering can yield a delivery receipt action hash
@@ -133,11 +156,12 @@ There has been **no deployment or persistent-cell upgrade** in this work.
 
 ## Remaining integration work / Sprint 2 candidates
 
-1. Review Agents 1, 2 and 4 draft PRs (#2, #3 and #1), obtain Agent 3 patch,
-   map the independent eight findings to remediation owners and do not
-   conflate them with the original seven unspecified findings.
-2. Integrate overlapping native worker changes only after security review;
-   prove conflict isolation and fail-closed signing/DKG handling.
+1. Review Agents 1–4 draft PRs (#2, #3, #5 and #1), map eight newly
+   identified findings to remediation owners, and do not conflate them with
+   the original seven unspecified findings.
+2. Reconcile four shared worker paths between Agents 2 and 3 after source
+   review; compile and test the combined trait/mocks and prove conflict
+   isolation, durable abort and fail-closed signing/DKG handling.
 3. Close or explicitly accept F1/F2 with tested lifecycle invariants and
    disposable process-kill/restart scenarios.
 4. Bring in the SDK and update the approved workspace inventory only after
