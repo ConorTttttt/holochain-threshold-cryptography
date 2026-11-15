@@ -52,6 +52,9 @@ impl DurablePort {
     }
 }
 impl LocalDkgNode for DurablePort {
+    fn abort(&mut self) -> Result<(), String> {
+        self.worker.abort_on_disconnect().map(|_| ())
+    }
     fn initialize(&mut self) -> Result<([u8;32],Vec<Envelope>),String> {
         let Reply::Initialized { local_public_key, outbound } = self.invoke(
             Command::Init { binding: self.binding.clone(), local: self.id.clone() })? else {
@@ -259,6 +262,11 @@ impl ChildPort {
     }
 }
 impl LocalDkgNode for ChildPort {
+    fn abort(&mut self) -> Result<(), String> {
+        // Test-only stdio fixture: the running tombstone forbids restart even
+        // when this child is killed before an explicit terminal transition.
+        Err("stdio fixture has no authenticated abort command".into())
+    }
     fn initialize(&mut self) -> Result<([u8;32],Vec<Envelope>),String> {
         let Reply::Initialized { local_public_key, outbound } = self.invoke(
             Command::Init { binding: self.binding.clone(), local: self.id.clone() })? else {
