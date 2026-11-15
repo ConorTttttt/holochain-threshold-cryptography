@@ -356,6 +356,23 @@ impl AuthenticatedController {
         }
         result
     }
+    /// Terminal connection cleanup, including clean EOF, malformed framing,
+    /// and transport failures outside authenticated command handling.
+    /// Mark this controller unusable before attempting the journal transition.
+    /// For a force-kill the method cannot run, but its `running` checkpoint
+    /// still prevents any new controller from resuming old DKG secrets.
+    pub(crate) fn abort_on_disconnect(&mut self) -> Result<bool, String> {
+        self.dead = true;
+        self.inner.poisoned = true;
+        self.inner.active = None;
+        match self.durable.as_mut() {
+            Some(store) => store.dkg_abort_running(&self.context.proposal_action,
+                &self.context.worker_agent, &self.context.session_id)
+                .map_err(|e| format!("cannot durably abort disconnected DKG: {e}")),
+            None => Ok(false),
+        }
+    }
+
     fn try_handle(&mut self, frame: AuthFrame<Command>) -> Result<AuthFrame<Reply>, String> {
         let command = self.gate.open(frame)?;
         if let Command::Init { binding, local } = &command {
