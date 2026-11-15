@@ -257,6 +257,12 @@ pub fn serve(state_dir: &Path) -> io::Result<()> {
     let (stream, _) = listener.accept()?;
     drop(listener);
     let result = serve_connection(&mut controller, stream);
+    // An authenticated command failure is already abort-journaled in `handle`.
+    // Normal EOF, truncated framing and transport errors bypass that handler:
+    // explicitly abort any still-running ceremony before releasing the socket.
+    // A completed share is intentionally retained for later activation.
+    let terminal = controller.abort_on_disconnect()
+        .map(|_| ()).map_err(|e| io::Error::new(io::ErrorKind::Other, e));
     // The socket is created in our private directory and may be removed after
     // the single-connection process ends. The journal remains permanent.
     let _ = fs::remove_file(&socket_path);
@@ -264,7 +270,7 @@ pub fn serve(state_dir: &Path) -> io::Result<()> {
     // The DKG wrote through an unanchored store; anchor its admission, replies
     // and sealed share now that the ceremony's only connection has ended.
     let anchored = custody.open_journal().map(drop).map_err(custody_refused);
-    result.and(anchored)
+    result.and(terminal).and(anchored)
 }
 
 fn serve_connection(controller: &mut AuthenticatedController, mut stream: UnixStream) -> io::Result<()> {
