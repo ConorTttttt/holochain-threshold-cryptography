@@ -749,14 +749,14 @@ async fn group_renewal_uses_fresh_proposal() {
     assert!(activated_group(&f.descriptor, &old_evidence).unwrap().is_some());
     let mut next = f.descriptor.clone();
     next.proposal_action = vec![0xed; 39];
-    next.epoch += 1;
+    // Keep the epoch equal deliberately: a fresh proposal must be distinct
+    // even if an implementation starts the new group's epoch from the same value.
     next.dkg_transcript_hash = commitment("fresh-proposal-test", b"new transcript");
     next.public_key_package_hash = commitment("fresh-proposal-test", b"new public package");
     assert_ne!(f.descriptor.digest().unwrap(), next.digest().unwrap());
     // Fabricated descriptor/votes exercise only group binding, not a real DKG.
-    assert!(activated_group(&next, &old_evidence).is_err()
-        || activated_group(&next, &old_evidence).unwrap().is_none(),
-        "old votes cannot activate a fresh proposal");
+    assert!(!matches!(activated_group(&next, &old_evidence), Ok(Some(_))),
+        "old votes cannot activate a fresh proposal even at the same epoch");
     let mut activation = holochain_mpc_security::activation::GroupActivation::new(next.clone()).unwrap();
     let digest = next.digest().unwrap();
     for member in &next.spec.participants { activation.attest(member, digest).unwrap(); }
