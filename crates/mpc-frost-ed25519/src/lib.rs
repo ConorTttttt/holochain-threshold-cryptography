@@ -703,6 +703,18 @@ impl AuthenticatedShareCollector {
            self.received.len() != package.signing_commitments().len() {
             return Err(ProviderError::Invalid("untrusted group, sender, package or missing share"));
         }
+        // The aggregate Schnorr equation is invariant under permutations of
+        // valid signature shares. Upstream frost::aggregate checks each signer
+        // only after a FAILED aggregate check, so a valid signature is NOT
+        // evidence that each share came from the claimed authenticated sender.
+        // Verify each share against that sender's roster identifier and the
+        // independently checked group public verification share first.
+        for (id, share) in &self.received {
+            let public_share = group.verifying_shares().get(id)
+                .ok_or(ProviderError::Invalid("missing authenticated signer verifying share"))?;
+            frost_core::verify_signature_share(*id, public_share, share, package,
+                group.verifying_key()).map_err(ProviderError::from)?;
+        }
         aggregate(binding,operation_id,message,package,&self.received,group)
     }
 }

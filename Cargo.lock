@@ -2817,6 +2817,7 @@ dependencies = [
 name = "holochain-mpc-frost-ed25519"
 version = "0.3.4"
 dependencies = [
+ "frost-core",
  "frost-ed25519",
  "holochain-mpc-core",
  "holochain-mpc-runtime",

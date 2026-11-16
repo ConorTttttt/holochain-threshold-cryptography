@@ -10,6 +10,8 @@ holochain-mpc-core = { path = "../mpc-core" }
 holochain-mpc-security = { path = "../mpc-security" }
 holochain-mpc-runtime = { path = "../mpc-runtime" }
 frost-ed25519 = { version = "=3.0.0", features = ["serialization"] }
+# Use the pinned upstream individual-share verifier for authenticated attribution.
+frost-core = "=3.0.0"
 rand = "0.8.5"
 serde = { workspace = true }
 serde_json = "1.0"

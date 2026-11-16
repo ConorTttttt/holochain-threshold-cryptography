@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - agents/sprint17-agent22-frost-adversarial-20261116
+      - sprint18/dkg-sdk-integration-recovery-20261116
   workflow_dispatch:
 
 permissions:
