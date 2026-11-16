@@ -809,3 +809,41 @@ async fn old_exhausted_group_is_not_silently_reactivated() {
         "KNOWN RED: past over-quota evidence must retire the group for new signing");
     assert!(net.lock().unwrap().results.is_empty());
 }
+
+
+/// S15-L01: a failure after deadline creation but before a session is
+/// returned is durable and terminal. This exercises the real prepare/reserve
+/// path, not a manually injected abort record.
+#[tokio::test]
+async fn begin_failure_after_deadline_is_durably_aborted() {
+    use holochain_mpc_dkg_worker::signing::approved_intent;
+    let f = fixture().await;
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    let plan = f.plan(100, &[1, 2]);
+    f.activate_all(&net);
+    for who in [1, 2] { f.approve(&net, &plan, &[who]); }
+    let active = activated_group(&f.descriptor, &net.lock().unwrap().activations)
+        .unwrap().unwrap();
+    let approved = approved_intent(&plan, &active, &net.lock().unwrap().approvals)
+        .unwrap().unwrap();
+    let local = [1_u8; 39];
+    let proposal = plan.descriptor.proposal_action.clone();
+    let operation = plan.operation_id;
+    let mut s = store(f.dir.path(), &local);
+    // now_ms=0 is rejected by reserve_nonce AFTER start_deadline succeeds.
+    let err = SigningSession::begin(f.custody(&local), &local, plan, active, approved,
+        &mut s, 0, 10_000).err().expect("invalid reservation must fail");
+    assert!(!err.is_empty());
+    assert!(s.ensure_live(&proposal, &operation, 100).is_err(),
+        "deadline must be terminally aborted, not left open");
+    drop(s);
+    let mut reopened = store(f.dir.path(), &local);
+    assert!(reopened.ensure_live(&proposal, &operation, 100).is_err(),
+        "abort must survive SQLite reopen");
+    assert!(reopened.start_deadline(&proposal, &operation, 20_000).is_err(),
+        "failed operation cannot be revived");
+    let fresh_operation = commitment("s15-l01-fresh-operation", b"approved-later");
+    reopened.start_deadline(&proposal, &fresh_operation, 20_000).unwrap();
+    reopened.reserve_nonce(&proposal, f.descriptor.epoch, &fresh_operation,
+        &local, 100).unwrap();
+}
