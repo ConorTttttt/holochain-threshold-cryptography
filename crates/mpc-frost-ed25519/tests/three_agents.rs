@@ -501,6 +501,15 @@ fn failed_prepare_restart_is_fail_closed() -> PResult<()> {
     ));
     assert_eq!(fixture.nonce_state(&mut reopened, 121, original)?,
                Some("reserved".into()));
+    // Recovery after a real SQLite reopen is a *new* operation with its own
+    // unanimous activation and independently approved exact signing intent.
+    fixture.sql(&mut reopened, 122, "DROP TRIGGER agent20_fail_auth")?;
+    let next = commitment("agent20-f8-operation", b"fresh-after-restart");
+    let next_approved = fixture.approved(next, F8_MESSAGE)?;
+    reopened.start_deadline(&fixture.binding.proposal_action, &next, 10_000)?;
+    let _new_commitment = restarted.prepare(&mut reopened, &next_approved, F8_MESSAGE, 102)?;
+    assert_eq!(fixture.nonce_state(&mut reopened, 123, next)?,
+               Some("published".into()));
     Ok(())
 }
 
