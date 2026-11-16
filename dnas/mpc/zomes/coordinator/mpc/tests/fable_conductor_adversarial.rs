@@ -171,6 +171,14 @@ async fn unaccepted_peer_blocks_delivery_until_convergence() {
 async fn private_inbox_isolation_preserved() {
     let net = network("fable-privacy", "opaque-rounds", 3).await;
     let grant = net.grant_for_bob().await;
+    // A leaked grant secret does NOT make the fourth agent a member. The
+    // stock sender zome denies its local preflight; the existing
+    // inbox_hardening::membership_and_context_binding_survive_hardening
+    // separately exercises Bob's assigned-grant check with Dave provenance.
+    assert_refused(
+        net.send_to_bob(OUTSIDER, grant.cap_secret.clone(), 2, 2, b"outsider").await,
+        "inbox_unauthorized",
+    );
     let receipt = net.send_to_bob(A, grant.cap_secret, 2, 1, b"private-event").await.unwrap();
     assert_eq!(receipt.status, ReceiptStatus::Stored);
     let bob = net.slots(B).await.unwrap();
