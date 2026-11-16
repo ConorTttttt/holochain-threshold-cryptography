@@ -22,7 +22,7 @@ The initial integration commit has **six Git parents**, in this order: the exact
 | Nix/CI and development test plan | #4 | 5ab8f1947b2a40d3a5cf6fec887b9bc851c0f521 | Incorporated; provisional report replaced |
 | Durable abort and partial-activation coverage | #5 | ec0176c0e4dbc19459dec3ef6516e02ba6c80198 | Incorporated |
 
-Source inventory: 37 changed paths in the initial integrated tree, including root Cargo.toml, Cargo.lock, and the four overlap resolutions. Every other file changed by an upstream PR is taken directly from that PR head's Git blob. The Stage 2C baseline and PR head identities were checked against GitHub metadata; the integration branch was created from the exact baseline SHA.
+Source inventory: 36 changed paths in the initial integrated tree, including root Cargo.toml, Cargo.lock, and the four overlap resolutions. Every other file changed by an upstream PR is taken directly from that PR head's Git blob. The Stage 2C baseline and PR head identities were checked against GitHub metadata; the integration branch was created from the exact baseline SHA.
 
 ## 2. PR #3 / PR #5 conflicts and security-sensitive resolution
 
