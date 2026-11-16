@@ -8,6 +8,7 @@
 use holochain_mpc_core::{commitment, Envelope, SessionSpec};
 use holochain_mpc_dkg_worker::conductor_bridge::KeyEvidence;
 use holochain_mpc_dkg_worker::ipc::{AuthChannel, ChannelContext, Role};
+use holochain_mpc_dkg_worker::inbox_slots::InboxSlots;
 use holochain_mpc_dkg_worker::relay::{LocalDkgNode, MpcTransport, Phase, RelayEngine, SendReceipt};
 use holochain_mpc_dkg_worker::{recover_completed_share, AuthenticatedController, Command,
     PeerKeyBinding, Reply};
@@ -29,8 +30,12 @@ impl MpcTransport for Transport {
             author: self.local.clone(), action: action.clone(), public_key: key });
         Ok(action)
     }
-    async fn get_inbox(&mut self) -> Result<Vec<Envelope>,String> {
-        Ok(self.shared.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
+    async fn get_inbox_slots(&mut self) -> Result<InboxSlots,String> {
+        Ok(InboxSlots {
+            envelopes: self.shared.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default(),
+            conflicts: vec![],
+            over_quota: vec![],
+        })
     }
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>,String> {
         Ok(self.shared.lock().unwrap().keys.clone())
@@ -487,8 +492,12 @@ impl SigningTransport for SignTransport {
     async fn approvals(&mut self) -> Result<Vec<ApprovalEvidence>, String> {
         Ok(self.net.lock().unwrap().approvals.clone())
     }
-    async fn inbox(&mut self) -> Result<Vec<Envelope>, String> {
-        Ok(self.net.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
+    async fn inbox_slots(&mut self) -> Result<InboxSlots, String> {
+        Ok(InboxSlots {
+            envelopes: self.net.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default(),
+            conflicts: vec![],
+            over_quota: vec![],
+        })
     }
     async fn publish(&mut self, env: &Envelope) -> Result<(), String> {
         let recipient = env.recipient.clone().ok_or("no recipient")?;
