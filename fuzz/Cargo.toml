@@ -1,0 +1,25 @@
+# Optional cargo-fuzz crate. Not a root workspace member and not part of CI.
+[package]
+name = "holochain-dkg-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+holochain-mpc-core = { path = "../crates/mpc-core" }
+holochain-mpc-security = { path = "../crates/mpc-security" }
+holochain-mpc-frost-ed25519 = { path = "../crates/mpc-frost-ed25519" }
+serde_json = "1.0"
+
+[workspace]
+
+[[bin]]
+name = "frame_envelopes"
+path = "fuzz_targets/frame_envelopes.rs"
+test = false
+doc = false
+bench = false
