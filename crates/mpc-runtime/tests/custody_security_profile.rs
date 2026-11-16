@@ -2,7 +2,6 @@
 //! custody: an independently operated rollback witness is NOT implemented.
 #![cfg(unix)]
 
-use holochain_mpc_runtime::chain::Anchor;
 use holochain_mpc_runtime::custody::{self, Custody, CustodyConfig, KeySource, Layout};
 use holochain_mpc_runtime::{MasterKey, RuntimeStore};
 use std::fs::{self, OpenOptions};
