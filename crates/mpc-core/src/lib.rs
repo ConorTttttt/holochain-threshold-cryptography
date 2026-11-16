@@ -12,7 +12,14 @@ pub const MAX_PARTICIPANTS: usize = 64;
 pub const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_MESSAGES_PER_SESSION: usize = 16_384;
 pub const MAX_ROUNDS: u32 = 1_000_000;
+/// Legacy v1: valid only under the historical session-only isolation contract.
+/// Do not use this type for a new cross-application SDK or a v2 ceremony.
 pub const WIRE_VERSION: u16 = 1;
+
+mod bound_v2;
+pub use bound_v2::{
+    BoundEnvelopeV2, BoundInboxV2, CeremonyBindingV2, BOUND_WIRE_VERSION,
+};
 
 pub type SessionId = [u8; 32];
 pub type ContextHash = [u8; 32];
