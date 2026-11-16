@@ -465,7 +465,8 @@ fn forged_share_attribution_cross_operation_replay_and_peer_commitments_fail() -
     assert_ne!(decoded.operation_id, operation_b);
 
     let mut tampered_peer = commitments;
-    tampered_peer.insert(b, tampered_peer[&a]);
+    let forged = tampered_peer[&a].clone();
+    tampered_peer.insert(b, forged);
     let changed = signing_package(&binding, operation_a, message, tampered_peer)?;
     assert!(aggregate(&binding, operation_a, message, &changed, &shares, &public).is_err());
 
