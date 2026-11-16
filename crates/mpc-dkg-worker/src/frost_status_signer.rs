@@ -171,7 +171,9 @@ mod tests {
             ZomeCallParamsSigned::new(bytes, Signature([0;64]))
         }).unwrap();
         let (_, b) = p.authorize(&request(&p, STATUS_INTENT)).unwrap();
-        assert_ne!(a.nonce, b.nonce);
+        let (signed_a,_) = a.serialize_and_hash().unwrap();
+        let (signed_b,_) = b.serialize_and_hash().unwrap();
+        assert_ne!(signed_a, signed_b);
         assert!(a.cap_secret.is_none());
         for name in ["get_session_status", "get_inbox", "get_inbox_slots",
                      "send_protocol_message", "accept_session", "propose_session",
@@ -209,7 +211,8 @@ mod tests {
         assert!(FrostStatusSignerPolicy::new(f).is_err());
         let mut f=policy_file(); f.spec.session_id=[1;32];
         assert!(FrostStatusSignerPolicy::new(f).is_err());
-        let mut f=policy_file(); f.spec.participants.retain(|a| a!=&f.binding.agent);
+        let mut f=policy_file(); let agent=f.binding.agent.clone();
+        f.spec.participants.retain(|a| a!=&agent);
         assert!(FrostStatusSignerPolicy::new(f).is_err());
         let mut f=policy_file(); f.spec.context_hash=[0;32];
         assert!(FrostStatusSignerPolicy::new(f).is_err());
