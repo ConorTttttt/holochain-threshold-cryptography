@@ -92,24 +92,39 @@ capabilities, tokens, signed call bytes, messages, journal contents or shares.
 A transport error after a write is ambiguous: NEVER automatically retry an
 approval, proposal, nonce-consuming operation or rejected write.
 
-## Real native read and policy dependency
+## Real native read and FROST status-only policy (Agent 4 continuation)
 
-With feature native-holochain on Unix, NativeCoordinatorBackend::connect
+With feature `native-holochain` on Unix, `NativeCoordinatorBackend::connect`
 probes the local signer socket and authenticates/pins the loopback Holochain
-app interface before exposing the backend. Each group_status gets a **fresh**
-operator-signed read via existing UnixMpcSigner, MpcCall::GetProbeSessionStatus,
-submit_signed_mpc_call, and the coordinator's get_session_status zome extern.
-It checks the exact proposal and session ID again on the returned record.
-The backend never automatically signs or grants authority.
+app interface before exposing the backend. It now **requires a complete
+independently approved SessionSpec**, which must match the local FROST v1
+session, agent, context and proposal pin. Do not source this expected spec
+from the status result.
 
-**Current blocker for live FROST ceremonies:** the existing FROST signer
-policy refuses GetProbeSessionStatus (it currently labels this operation a
-probe-only read), while the dedicated probe signer is bound to the transport
-probe protocol. The SDK deliberately does not bypass these profiles. A
-separate reviewed integration patch must expose an explicitly authorised
-read-only FROST status intent and update signed-call allowlists; until then,
-a FROST live status call can fail with Backend/Unauthorized. This is a real
-signed RPC integration path, not proof of a successful live FROST read.
+Each `group_status` makes exactly one distinct
+`SignIntent::ReadFrostCeremonyStatus` request. The SDK signer IPC sends
+`frost_ceremony_status_v1` to the new opt-in
+`mpc-lair-signer --frost-status-profile` policy; this translates to the
+existing conductor `get_session_status` zome read and signed
+`MpcCall::GetProbeSessionStatus` wire shape. The old
+`SignIntent::ReadProbeSession` retains its existing different signer-IPC
+operation. The FROST DKG, transport-probe and signing profiles do not gain
+new permissions.
+
+The native backend checks the exact proposal action before signing and
+compares the complete returned `SessionSpec` (including `application_id`,
+`context_hash`, roster, threshold, protocol and session ID) against the
+expected approved one. The facade validates acceptance authors, protocol and
+`ready_observed` consistency, mapping full consent only to
+`ReadyToStart`. Unexpected/malformed or old coordinator responses are
+rejected without compatibility downgrades.
+
+**Validation status:** this is an implementation patch, not an end-to-end PASS.
+The agent environment has no Rust toolchain, Nix or live Holochain conductor;
+compilation and actual signed-read tests remain NOT RUN. Run the
+`examples/live_status.rs` executable with test-only credentials and a
+disposable conductor following `docs/sdk/LIVE_FROST_STATUS.md`. The existing
+`examples/read_status.rs` remains an offline fixture.
 
 ## Future TypeScript ↔ native service boundary
 
