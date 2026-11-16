@@ -93,6 +93,7 @@ separately documented operator migration. `--production` cannot initialise.
 
 | Role | Intended UID | Privileged material | Mandatory boundary / current gap |
 |---|---|---|---|
+| Provisioning / recovery operator | Separate audited administrator (root only for setup, never normal runtime) | Admin-only sealed credential input, anchor directory and offline backup authority | Audit provisioning/recovery; never share runtime custody UID, never store reusable credentials in conductor/relay state |
 | Custody worker + native FROST signer | `mpc-custody` | encrypted share journal and *in-process* key | 0700 state directory, private key/credential, authenticated nonce and approval checks |
 | Bridge / relay | `mpc-relay` | its own narrowly scoped IPC credential | **GAP:** `bridge_credentials` reads `ipc.key` inside custody's 0700 directory; `controller.sock` there is 0600 |
 | Lair signing service | `mpc-lair` | Lair root, Lair key material | **GAP:** `socket_signer.rs` / `lair_signer_main.rs` enforce same-UID peers; `lair_signer.rs` requires its keystore root under that UID |
