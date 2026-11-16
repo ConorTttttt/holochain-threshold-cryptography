@@ -32,7 +32,7 @@ fn next(state: &mut u64) -> u64 {
     *state ^= *state >> 12;
     *state ^= *state << 25;
     *state ^= *state >> 27;
-    state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    (*state).wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
 fn blob(state: &mut u64) -> Vec<u8> {
     let size = 1 + (next(state) as usize % 96);
