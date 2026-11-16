@@ -4,7 +4,11 @@
 //! in-memory stand-in for authenticated zome responses.
 use holochain_mpc_core::{commitment, Envelope, SessionSpec};
 use holochain_mpc_dkg_worker::conductor_bridge::KeyEvidence;
+use holochain_mpc_dkg_worker::inbox_slots::{InboxSlots, WithheldSlot, StoredVariant};
+use holochain_zome_types::prelude::ActionHash;
 use holochain_mpc_dkg_worker::relay::{LocalDkgNode, MpcTransport, Phase, RelayEngine, SendReceipt};
+use holochain_mpc_dkg_worker::relay_supervisor::{supervise, PollPolicy};
+use std::time::Duration;
 use holochain_mpc_dkg_worker::{Command, Controller, PeerKeyBinding, Reply};
 use holochain_mpc_frost_ed25519::Binding;
 use holochain_mpc_security::activation::GroupDescriptor;
@@ -19,6 +23,25 @@ struct Network {
     stop_send: bool,
     /// Key registrations not yet visible through this stand-in DHT.
     hidden_keys: Vec<Vec<u8>>,
+    over_quota: BTreeMap<Vec<u8>, Vec<WithheldSlot>>,
+}
+// Test-double equivalent of Stage 2C slot partitioning; never selects a
+// variant of a conflicting slot for consumption.
+fn snapshot(records: &[Envelope]) -> InboxSlots {
+    let mut by_slot: BTreeMap<(Vec<u8>,u32,u64),Vec<Envelope>> = BTreeMap::new();
+    for env in records {
+        let variants = by_slot.entry((env.sender.clone(),env.round,env.sequence)).or_default();
+        if !variants.contains(env) { variants.push(env.clone()); }
+    }
+    let mut out = InboxSlots::default();
+    for ((sender,round,sequence), variants) in by_slot {
+        if variants.len() == 1 { out.envelopes.push(variants[0].clone()); }
+        else { out.conflicts.push(WithheldSlot {sender,round,sequence,
+            variants:variants.into_iter().enumerate().map(|(i,envelope)| StoredVariant {
+                envelope,storage_actions:vec![ActionHash::from_raw_32(vec![(i+1) as u8;32])]
+            }).collect()}); }
+    }
+    out
 }
 struct Transport { shared: Arc<Mutex<Network>>, local: Vec<u8> }
 impl MpcTransport for Transport {
@@ -32,8 +55,11 @@ impl MpcTransport for Transport {
             action:action.clone(),public_key:key});
         Ok(action)
     }
-    async fn get_inbox(&mut self) -> Result<Vec<Envelope>,String> {
-        Ok(self.shared.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
+    async fn get_inbox_slots(&mut self) -> Result<InboxSlots,String> {
+        let net = self.shared.lock().unwrap();
+        let mut slots = snapshot(net.inbox.get(&self.local).map(Vec::as_slice).unwrap_or(&[]));
+        slots.over_quota.extend(net.over_quota.get(&self.local).cloned().unwrap_or_default());
+        Ok(slots)
     }
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>,String> {
         let net = self.shared.lock().unwrap();
@@ -52,6 +78,10 @@ impl LocalPort {
     fn invoke(&mut self, cmd: Command) -> Result<Reply,String> { self.controller.handle(cmd) }
 }
 impl LocalDkgNode for LocalPort {
+    fn abort(&mut self) -> Result<(), String> {
+        self.controller = Controller::default(); // no persistent state in simulation
+        Ok(())
+    }
     fn initialize(&mut self) -> Result<([u8;32],Vec<Envelope>),String> {
         let Reply::Initialized { local_public_key, outbound } = self.invoke(
             Command::Init { binding:self.binding.clone(),local:self.id.clone() })? else {
@@ -178,6 +208,52 @@ async fn conflicting_duplicate_inbox_and_cross_session_fail_closed() {
     assert_eq!(relay3.phase(),Phase::Aborted);
 }
 
+/// A later conflict is visible even when the original message was delivered
+/// in an earlier poll; seen-ID deduplication must never hide equivocation.
+#[tokio::test]
+async fn late_dkg_equivocation_is_detected_after_first_delivery() {
+    let binding = make_binding();
+    let shared = Arc::new(Mutex::new(Network::default()));
+    let mut relays: Vec<_> = (1..=3).map(|i| make_relay(&binding,i,shared.clone())).collect();
+    for r in &mut relays { r.start().await.unwrap(); }
+    assert!(relays[0].poll_once().await.unwrap().delivered > 0);
+    let first = shared.lock().unwrap().inbox[&vec![1;39]].iter()
+        .find(|e| e.sender == vec![2;39] && e.round == 1).unwrap().clone();
+    let mut conflicting = first;
+    conflicting.payload = b"late conflicting payload".to_vec();
+    conflicting.payload_hash = commitment("envelope-payload",&conflicting.payload);
+    shared.lock().unwrap().inbox.get_mut(&vec![1;39]).unwrap().push(conflicting);
+    let err = relays[0].poll_once().await.unwrap_err();
+    assert!(err.contains("conflicting authenticated DKG"), "{err}");
+    assert_eq!(relays[0].phase(),Phase::Aborted);
+}
+
+/// A withheld signing slot has no authority to abort the DKG relay. By
+/// contrast, over-quota evidence in a DKG slot is fatal immediately.
+#[tokio::test]
+async fn unrelated_slot_conflict_is_isolated_but_dkg_over_quota_aborts() {
+    let binding = make_binding();
+    let shared = Arc::new(Mutex::new(Network::default()));
+    let mut relays: Vec<_> = (1..=3).map(|i| make_relay(&binding,i,shared.clone())).collect();
+    for r in &mut relays { r.start().await.unwrap(); }
+    let e = Envelope::new(&binding.spec,vec![2;39],Some(vec![1;39]),4,44,
+        b"unrelated signing operation".to_vec()).unwrap();
+    let mut other = e.clone();other.payload=b"another value".to_vec();
+    other.payload_hash=commitment("envelope-payload",&other.payload);
+    shared.lock().unwrap().inbox.entry(vec![1;39]).or_default().extend([e,other]);
+    let report=relays[0].poll_once().await.unwrap();
+    assert!(report.delivered > 0, "unrelated conflict must not block valid DKG messages");
+    let held=Envelope::new(&binding.spec,vec![2;39],Some(vec![1;39]),1,77,
+        b"held announcement".to_vec()).unwrap();
+    shared.lock().unwrap().over_quota.entry(vec![1;39]).or_default().push(WithheldSlot {
+        sender:vec![2;39],round:1,sequence:77,variants:vec![StoredVariant {
+            envelope:held,storage_actions:vec![ActionHash::from_raw_32(vec![99;32])]
+        }]});
+    let err=relays[0].poll_once().await.unwrap_err();
+    assert!(err.contains("over sender quota"), "{err}");
+    assert_eq!(relays[0].phase(),Phase::Aborted);
+}
+
 /// Holochain is eventually consistent: a peer's key registration can arrive
 /// after its attestation. The relays must wait, not abort, and then finish.
 #[tokio::test]
@@ -218,4 +294,25 @@ async fn forked_key_registration_aborts() {
     }
     assert!(aborted && parties.iter().all(|p| p.phase() != Phase::Complete),
         "a forked registration must never reach Round 2");
+}
+
+#[tokio::test]
+async fn network_partition_exhausts_poll_budget_and_aborts_without_retry() {
+    let binding = make_binding();
+    // One participant is isolated after it publishes Round-1 announcements.
+    // It sees no peer echoes. The supervisor must close the worker rather than
+    // returning with a live, resumable relay after deadline exhaustion.
+    let network = Arc::new(Mutex::new(Network::default()));
+    let mut isolated = make_relay(&binding, 1, network.clone());
+    let result = supervise(&mut isolated, PollPolicy {
+        interval: Duration::from_millis(100),
+        rpc_deadline: Duration::from_secs(1),
+        max_polls: 1,
+    }, std::future::pending()).await;
+    assert!(result.unwrap_err().contains("poll budget"));
+    assert_eq!(isolated.phase(), Phase::Aborted);
+    assert!(isolated.descriptor().is_none());
+    assert!(isolated.poll_once().await.is_err());
+    // No synthetic transport retry can complete the poisoned original relay.
+    assert_eq!(network.lock().unwrap().keys.len(), 1);
 }

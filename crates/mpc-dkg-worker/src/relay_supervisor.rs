@@ -28,20 +28,40 @@ impl PollPolicy {
 #[allow(async_fn_in_trait)]
 pub trait RelayTicks {
     fn phase(&self) -> Phase;
+    fn abort(&mut self) -> Result<(), String>;
     async fn start(&mut self) -> Result<TickReport, String>;
     async fn poll_once(&mut self) -> Result<TickReport, String>;
 }
 
 impl<N: LocalDkgNode, T: MpcTransport> RelayTicks for RelayEngine<N, T> {
     fn phase(&self) -> Phase { RelayEngine::phase(self) }
+    fn abort(&mut self) -> Result<(), String> { RelayEngine::abort(self) }
     async fn start(&mut self) -> Result<TickReport, String> { RelayEngine::start(self).await }
     async fn poll_once(&mut self) -> Result<TickReport, String> { RelayEngine::poll_once(self).await }
 }
 
 /// Shutdown, signed-RPC uncertainty, poll timeout, or deadline exhaustion all
-/// terminate this process's ceremony. The caller must DROP the worker bridge,
-/// not retry its old proposal. A Completed result is the only success state.
+/// terminate this process's ceremony. Always abort the worker connection on
+/// failure, including cancellation mid-await, before returning an error.
+/// A Completed result is the only success state.
 pub async fn supervise<R, F>(relay: &mut R, policy: PollPolicy, shutdown: F) -> Result<(), String>
+where R: RelayTicks, F: Future<Output=()> {
+    match supervise_inner(relay, policy, shutdown).await {
+        Ok(()) => Ok(()),
+        Err(reason) => {
+            // Abort even if a timed-out `start` has not advanced Phase::New:
+            // Init might already have committed the write-ahead checkpoint.
+            if relay.phase() != Phase::Complete {
+                if let Err(close) = relay.abort() {
+                    return Err(format!("{reason}; worker abort/disconnect failed: {close}"));
+                }
+            }
+            Err(reason)
+        }
+    }
+}
+
+async fn supervise_inner<R, F>(relay: &mut R, policy: PollPolicy, shutdown: F) -> Result<(), String>
 where R: RelayTicks, F: Future<Output=()> {
     policy.validate()?;
     if relay.phase() != Phase::New { return Err("cannot supervise previously started relay".into()); }
@@ -83,16 +103,18 @@ mod tests {
 
     struct Dummy {
         phase: Phase, starts: Arc<AtomicUsize>, polls: usize,
-        complete_after: usize, fail_at: Option<usize>, stall: bool,
+        complete_after: usize, fail_at: Option<usize>, stall: bool, stall_start: bool,
     }
     impl Dummy {
         fn new() -> Self { Self { phase: Phase::New, starts: Arc::new(AtomicUsize::new(0)),
-            polls:0, complete_after:1, fail_at:None, stall:false } }
+            polls:0, complete_after:1, fail_at:None, stall:false, stall_start:false } }
     }
     impl RelayTicks for Dummy {
         fn phase(&self) -> Phase { self.phase }
+        fn abort(&mut self) -> Result<(), String> { self.phase = Phase::Aborted; Ok(()) }
         async fn start(&mut self) -> Result<TickReport, String> {
             self.starts.fetch_add(1, Ordering::SeqCst);
+            if self.stall_start { tokio::time::sleep(Duration::from_secs(5)).await; }
             self.phase=Phase::Echo;
             Ok(TickReport{ phase:self.phase, published:2, delivered:0 })
         }
@@ -130,6 +152,19 @@ mod tests {
         assert_eq!(d.starts.load(Ordering::SeqCst),1);
         assert_eq!(d.polls,0);
     }
+    #[tokio::test]
+    async fn cancellation_mid_start_aborts_even_if_phase_still_new() {
+        let mut d=Dummy::new();
+        d.stall_start=true;
+        // The start future began, but did not advance to Echo before shutdown.
+        // In a real worker Init may already have journaled its admission.
+        let err=supervise(&mut d,policy(),tokio::time::sleep(Duration::from_millis(10)))
+            .await.unwrap_err();
+        assert!(err.contains("stopped before DKG admission"), "{err}");
+        assert_eq!(d.starts.load(Ordering::SeqCst),1);
+        assert_eq!(d.phase,Phase::Aborted, "supervisor must invoke abort callback");
+    }
+
     #[tokio::test]
     async fn polling_budget_is_a_terminal_error() {
         let mut d=Dummy::new();d.complete_after=usize::MAX;

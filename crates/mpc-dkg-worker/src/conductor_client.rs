@@ -148,6 +148,7 @@ mod tests {
 #[derive(Debug)]
 pub enum MpcZomeResult {
     Inbox(Vec<holochain_mpc_core::Envelope>),
+    InboxSlots(crate::inbox_slots::InboxSlots),
     ProbeSession {spec: holochain_mpc_core::SessionSpec, accepted: Vec<Vec<u8>>, ready: bool},
     EncryptionKeys(Vec<crate::conductor_bridge::KeyEvidence>),
     KeyRegistration { action: Vec<u8> },
@@ -185,6 +186,13 @@ fn decode_mpc_response(
             struct Status {spec: holochain_mpc_core::SessionSpec, accepted: Vec<holochain_zome_types::prelude::AgentPubKey>, ready_observed: bool}
             let s: Status=io.decode().map_err(|_| "invalid probe session status")?;
             Ok(MpcZomeResult::ProbeSession {spec:s.spec,accepted:s.accepted.into_iter().map(|a|a.get_raw_39().to_vec()).collect(),ready:s.ready_observed})
+        }
+        MpcCall::GetInboxSlots => {
+            // Do not downgrade when an older coordinator rejects this API.
+            let slots: crate::inbox_slots::InboxSlots = io.decode()
+                .map_err(|_| "get_inbox_slots returned an invalid structured response")?;
+            slots.validate_for_pin(pin)?;
+            Ok(MpcZomeResult::InboxSlots(slots))
         }
         MpcCall::GetInbox => {
             let inbox: Vec<holochain_mpc_core::Envelope> = io.decode()

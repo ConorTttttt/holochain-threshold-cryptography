@@ -2753,6 +2753,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "holochain-dkg-sdk"
+version = "0.1.0"
+dependencies = [
+ "holochain-mpc-core",
+ "holochain-mpc-dkg-worker",
+ "holochain-mpc-security",
+ "tokio",
+]
+
+[[package]]
 name = "holochain-mpc-adapter"
 version = "0.3.4"
 dependencies = [

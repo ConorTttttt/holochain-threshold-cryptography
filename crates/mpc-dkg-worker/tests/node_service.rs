@@ -87,7 +87,7 @@ fn two_independent_node_processes_accept_only_their_own_authenticated_controller
     let a_store = RuntimeStore::open(&alice_dir.join("journal.sqlite"),
         MasterKey::from_bytes(key(&alice_dir,"storage.key"))).unwrap();
     assert_eq!(a_store.dkg_checkpoint(&alice.proposal_action,&alice.worker_agent,&alice.session_id)
-        .unwrap().unwrap().state, DkgState::Running);
+        .unwrap().unwrap().state, DkgState::Aborted);
     let b_store = RuntimeStore::open(&bob_dir.join("journal.sqlite"),
         MasterKey::from_bytes(key(&bob_dir,"storage.key"))).unwrap();
     assert_eq!(b_store.dkg_checkpoint(&bob.proposal_action,&bob.worker_agent,&bob.session_id)
@@ -98,4 +98,55 @@ fn two_independent_node_processes_accept_only_their_own_authenticated_controller
     // Both journals are terminal for restarts of their pinned proposal.
     assert!(!child(&alice_dir).wait().unwrap().success());
     assert!(!child(&bob_dir).wait().unwrap().success());
+}
+
+#[test]
+fn disconnect_before_init_does_not_poison_an_unstarted_ceremony() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("node");
+    let ctx = context(1, 9, 4);
+    provision(&dir, ctx.clone()).unwrap();
+    let mut first = child(&dir);
+    let sock = connect(&dir);
+    drop(sock); // EOF without any protocol command or FROST randomness
+    assert!(first.wait().unwrap().success());
+    let journal = RuntimeStore::open(&dir.join("journal.sqlite"),
+        MasterKey::from_bytes(key(&dir, "storage.key"))).unwrap();
+    assert!(journal.dkg_checkpoint(&ctx.proposal_action, &ctx.worker_agent, &ctx.session_id)
+        .unwrap().is_none());
+    drop(journal);
+    // There was no admission: a new native process may still accept Init.
+    let mut second = child(&dir);
+    drop(connect(&dir));
+    assert!(second.wait().unwrap().success());
+}
+
+#[test]
+fn truncated_ipc_frame_after_init_durably_aborts_and_denies_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("node");
+    let ctx = context(1, 9, 4);
+    provision(&dir, ctx.clone()).unwrap();
+    let mut process = child(&dir);
+    let mut socket = connect(&dir);
+    let mut host = AuthChannel::new(key(&dir, "ipc.key"), ctx.clone(), Role::Host).unwrap();
+    let init = host.seal(Command::Init {
+        binding: binding(&ctx), local: ctx.worker_agent.clone() }).unwrap();
+    serde_json::to_writer(&mut socket, &init).unwrap();
+    socket.write_all(b"\n").unwrap();
+    let mut reply_line = String::new();
+    assert_ne!(BufReader::new(socket.try_clone().unwrap()).read_line(&mut reply_line).unwrap(), 0);
+    let reply: AuthFrame<Reply> = serde_json::from_str(&reply_line).unwrap();
+    assert!(matches!(host.open(reply).unwrap(), Reply::Initialized { .. }));
+    socket.write_all(b"{truncated").unwrap();
+    drop(socket); // read_until reaches EOF with an unterminated frame
+    assert!(!process.wait().unwrap().success());
+    let journal = RuntimeStore::open(&dir.join("journal.sqlite"),
+        MasterKey::from_bytes(key(&dir, "storage.key"))).unwrap();
+    let checkpoint = journal.dkg_checkpoint(&ctx.proposal_action, &ctx.worker_agent,
+        &ctx.session_id).unwrap().unwrap();
+    assert_eq!(checkpoint.state, DkgState::Aborted);
+    assert_eq!(checkpoint.revision, 2, "Init was acknowledged before terminal abort");
+    drop(journal);
+    assert!(!child(&dir).wait().unwrap().success());
 }
