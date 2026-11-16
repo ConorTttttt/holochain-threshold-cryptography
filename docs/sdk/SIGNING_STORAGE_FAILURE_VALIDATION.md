@@ -20,10 +20,11 @@ performed. This document is not an audit or deployment approval.
 - Exact implementation commit: `579218777b4adf287617c4fd4260475557f47380`.
   Native F-8 test commits: `c753d48ace8e965b9eb4102d927f879bdfefe061`
   and `a3682a1bb5e73e8376c68f21f55e09d85661a56a`.
-  Storage-boundary test commit:
-  `1c514dee94bd039b1fc071b32b0cb755167a4538`.
+  Storage-boundary test commits:
+  `1c514dee94bd039b1fc071b32b0cb755167a4538` and
+  `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7`.
   The full test source is present together at exact commit
-  `a3682a1bb5e73e8376c68f21f55e09d85661a56a`.
+  `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7`.
 - Scope of code changes: `crates/mpc-frost-ed25519/src/lib.rs`,
   `crates/mpc-frost-ed25519/tests/three_agents.rs`, and
   `crates/mpc-runtime/tests/durable.rs`. No wire schema, DNA, integrity zome,
@@ -118,7 +119,7 @@ existing SQLite slot or silently re-authorize an ambiguous write.
 ## Regression tests authored
 
 Exact test-source commit:
-`a3682a1bb5e73e8376c68f21f55e09d85661a56a`.
+`6f6fb58413c4035957ab117ffdd17ebc4e25f0d7`.
 All entries below are **E1 authored / E3 NOT RUN / E7 NOT RUN**.
 No claimed PASS or exit code exists because none of the commands executed.
 
@@ -133,10 +134,11 @@ No claimed PASS or exit code exists because none of the commands executed.
 | `commitment_failure_preserves_approved_intent` | One selected signer cannot finalize approvals; changed message fails before nonce reservation; approved original message passes |
 | `reserve_nonce_storage_error_is_fail_closed_after_explicit_abort` | SQLite insert failure yields no nonce slot; caller's explicit abort prevents restart (automatic `begin` accounting separately owned) |
 | `authorize_commitment_after_commit_before_ack_is_ambiguous_and_burned` | Real SQLite `published` write is committed before anchor error; after restoring disposable anchor and reopening, original slot cannot be reused |
+| `custody_log_failure_rolls_back_nonce_reserve_and_publication` | Inject failures of authenticated custody-log writes in both reservation and authorization transactions; neither transition partially commits |
 
 The F-8 tests are in
 `crates/mpc-frost-ed25519/tests/three_agents.rs`.
-The two lower-level fault tests are in
+The three lower-level fault tests are in
 `crates/mpc-runtime/tests/durable.rs`. Test randomness and identities are
 disposable; no nonce, share, key, credential or capability value is printed.
 
@@ -144,13 +146,13 @@ disposable; no nonce, share, key, credential or capability value is printed.
 
 | Candidate SHA / command | Exit status | Relevant recorded evidence |
 | --- | --- | --- |
-| `a3682a1bb5e73e8376c68f21f55e09d85661a56a` — `cargo test --locked -p holochain-mpc-frost-ed25519 --test three_agents` | **NOT RUN** | `command -v cargo` returned exit **1**; no Rust toolchain in execution container. Covers 7 new tests plus existing native tests. |
-| `a3682a1bb5e73e8376c68f21f55e09d85661a56a` — `cargo test --locked -p holochain-mpc-runtime --test durable` | **NOT RUN** | Same missing `cargo`. Covers 2 new SQLite/anchor tests plus existing store tests. |
-| `a3682a1bb5e73e8376c68f21f55e09d85661a56a` — `cargo check --locked --workspace --all-targets` | **NOT RUN** | `command -v rustc` exit **1**. Separately, older baseline CI run `43835405873` failed (exit **101**) at missing `holochain_zome_types` import in `mpc-dkg-worker/inbox_slots.rs`; that earlier failure does not validate or invalidate this patch. |
-| `a3682a1bb5e73e8376c68f21f55e09d85661a56a` — `npm run build:happ` | **NOT RUN** | No `nix` or `hc`: both `command -v` exit **1**; changes here do not alter WASM/DNA but prior build evidence cannot be promoted. |
-| `a3682a1bb5e73e8376c68f21f55e09d85661a56a` — `npm run test:sweettest` | **NOT RUN** | No native runner or disposable conductors available. |
-| `a3682a1bb5e73e8376c68f21f55e09d85661a56a` — `git ls-remote https://github.com/ConorTttttt/holochain-threshold-cryptography.git refs/heads/agents/sprint17-agent20-signing-storage-f8-20261116` | **128, environment failure** | `fatal: unable to access ... Could not resolve host: github.com`. GitHub App read/write connector was used instead; this was not a test run. |
-| `a3682a1bb5e73e8376c68f21f55e09d85661a56a` — GitHub Compare API `899e433d...a3682a1b` | **API success, not a shell exit** | Ahead 4, behind 0, changed only 3 intended Rust files. Source presence only, **E1**. |
+| `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7` — `cargo test --locked -p holochain-mpc-frost-ed25519 --test three_agents` | **NOT RUN** | `command -v cargo` returned exit **1**; no Rust toolchain in execution container. Covers 7 new tests plus existing native tests. |
+| `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7` — `cargo test --locked -p holochain-mpc-runtime --test durable` | **NOT RUN** | Same missing `cargo`. Covers 3 new SQLite/anchor tests plus existing store tests. |
+| `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7` — `cargo check --locked --workspace --all-targets` | **NOT RUN** | `command -v rustc` exit **1**. Separately, older baseline CI run `43835405873` failed (exit **101**) at missing `holochain_zome_types` import in `mpc-dkg-worker/inbox_slots.rs`; that earlier failure does not validate or invalidate this patch. |
+| `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7` — `npm run build:happ` | **NOT RUN** | No `nix` or `hc`: both `command -v` exit **1**; changes here do not alter WASM/DNA but prior build evidence cannot be promoted. |
+| `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7` — `npm run test:sweettest` | **NOT RUN** | No native runner or disposable conductors available. |
+| `6f6fb58413c4035957ab117ffdd17ebc4e25f0d7` — `git ls-remote https://github.com/ConorTttttt/holochain-threshold-cryptography.git refs/heads/agents/sprint17-agent20-signing-storage-f8-20261116` | **128, environment failure** | `fatal: unable to access ... Could not resolve host: github.com`. GitHub App read/write connector was used instead; this was not a test run. |
+| `dc11a41b0f16c6d04456175a95e749da3b377a2a` — GitHub Compare API `899e433d...dc11a41b` | **API success, not a shell exit** | Ahead 5, behind 0, changed 3 Rust files and this validation document. Source presence only, **E1**. |
 
 **Toolchain observations:** `command -v cargo` exit 1,
 `command -v rustc` exit 1, `command -v nix` exit 1,
@@ -167,7 +169,7 @@ None of these environment checks is an executed Rust test.
 | **E4 — WASM and hApp build** | **NOT RUN** |
 | **E5 — real Holochain conductors** | **NOT RUN** |
 | **E6 — cryptography across real conductors** | **NOT RUN** |
-| **E7 — adversarial/fault-injection evidence** | **NOT RUN** at execution level; 9 source regression tests authored |
+| **E7 — adversarial/fault-injection evidence** | **NOT RUN** at execution level; 10 source regression tests authored |
 | **E8 — independent review** | **NOT RUN** for Agent 20's change; the separate Sprint 1.5 review covers the earlier baseline, not this patch |
 
 ## Coordination and remaining acceptance gates
@@ -180,7 +182,7 @@ None of these environment checks is an executed Rust test.
   The new lower-level explicit-abort test should be reused, not copied into a
   second overlapping implementation. Any common error policy should be
   reviewed together before integration.
-- **Still needed:** actually execute the nine named tests on a Rust-enabled,
+- **Still needed:** actually execute the ten named tests on a Rust-enabled,
   clean, pinned candidate; archive commit/command/exit/result logs and a
   source review of the cleanup ordering. Specifically check `WrongState`
   recovery on the same instance, `reserved` versus `published` state
