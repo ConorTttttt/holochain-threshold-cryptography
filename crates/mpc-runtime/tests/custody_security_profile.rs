@@ -86,8 +86,7 @@ fn test_hardened_profile_rejects_unprotected_or_ambiguous_layouts() {
 #[test]
 fn test_development_backup_restore_restart_with_disposable_share() -> TestResult {
     if unsafe { geteuid() } == 0 {
-        eprintln!("NOT VERIFIED: custody must run as a dedicated non-root user");
-        return Ok(());
+        return Err("custody backup/restore fixture must run as a dedicated non-root user; NOT VERIFIED".into());
     }
     let tmp = tempdir()?;
     let state = tmp.path().join("node");
@@ -132,8 +131,7 @@ fn test_development_backup_restore_restart_with_disposable_share() -> TestResult
 #[test]
 fn test_whole_state_snapshot_rewind_refused() -> TestResult {
     if unsafe { geteuid() } == 0 {
-        eprintln!("NOT VERIFIED: custody startup refuses the root UID");
-        return Ok(());
+        return Err("custody snapshot fixture must run as a non-root user; NOT VERIFIED".into());
     }
     let tmp = tempdir()?;
     let state = tmp.path().join("node");
