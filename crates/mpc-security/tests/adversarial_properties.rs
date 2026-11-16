@@ -160,3 +160,37 @@ fn forged_provenance_and_cross_proposal_attestation_are_rejected() {
     assert!(other_b.receive_envelope(&members[1], &members[0], &env).is_err());
     assert!(other_b.finalize().is_err());
 }
+
+#[test]
+fn duplicate_announcements_are_idempotent_but_conflicts_fail_closed() {
+    let (ceremony, members) = ceremony();
+    let mut b = EchoBroadcast::new(ceremony.clone(), members[1].clone()).unwrap();
+    let mut a = EchoBroadcast::new(ceremony, members[0].clone()).unwrap();
+    let honest = b.begin(b"public round-one B".to_vec()).unwrap();
+    let env = b.outgoing(&members[0], 11, &honest).unwrap();
+    assert!(matches!(a.receive_envelope(&members[0], &members[1], &env), Ok(Some(Msg::EchoDigest { .. }))));
+    assert!(matches!(a.receive_envelope(&members[0], &members[1], &env), Ok(None)));
+    // Same slot, DIFFERENT valid envelope bytes: even if a transport layer
+    // incorrectly forwarded both, the transcript gate must halt.
+    let altered = b.outgoing(&members[0], 11,
+        &Msg::Announce { package: b"conflicting B package".to_vec() }).unwrap();
+    assert!(a.receive_envelope(&members[0], &members[1], &altered).is_err());
+    assert!(a.is_aborted());
+    assert!(a.finalize().is_err());
+}
+
+#[test]
+fn conflicting_attestations_from_one_authenticated_origin_abort() {
+    let (ceremony, members) = ceremony();
+    let b = EchoBroadcast::new(ceremony.clone(), members[1].clone()).unwrap();
+    let mut a = EchoBroadcast::new(ceremony, members[0].clone()).unwrap();
+    a.begin(b"A public R1".to_vec()).unwrap();
+    let first = b.outgoing(&members[0], 77,
+        &Msg::Attest { transcript_hash: [7; 32] }).unwrap();
+    a.receive_envelope(&members[0], &members[1], &first).unwrap();
+    let conflicting = b.outgoing(&members[0], 78,
+        &Msg::Attest { transcript_hash: [8; 32] }).unwrap();
+    assert!(a.receive_envelope(&members[0], &members[1], &conflicting).is_err());
+    assert!(a.is_aborted());
+    assert!(a.finalize().is_err());
+}
