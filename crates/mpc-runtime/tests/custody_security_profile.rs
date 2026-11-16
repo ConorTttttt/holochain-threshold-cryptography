@@ -5,7 +5,7 @@
 use holochain_mpc_runtime::chain::Anchor;
 use holochain_mpc_runtime::custody::{self, Custody, CustodyConfig, KeySource, Layout};
 use holochain_mpc_runtime::{MasterKey, RuntimeStore};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -186,6 +186,11 @@ fn test_separated_uids_cannot_read_custody() -> TestResult {
     private_file(&secret, &KEY)?;
     let journal = state.join("journal.sqlite");
     private_file(&journal, b"")?;
+    {
+        let mut store = RuntimeStore::open(&journal, MasterKey::from_bytes(KEY))?;
+        store.seal_share(&[1; 39], 0, &[2; 39], [3; 32], b"disposable UID-isolation share")?;
+    }
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o600))?;
     let owner = 61001_u32;
     for path in [&state, &secret, &journal] {
         chown(path, Some(owner), Some(owner))?;
@@ -200,7 +205,6 @@ fn test_separated_uids_cannot_read_custody() -> TestResult {
             .status()?;
         assert!(result.success(), "other UID {other_uid} could read protected custody files");
     }
-    let _ = File::open(tmp.path())?; // Fixture is on a real filesystem.
     Ok(())
 }
 
