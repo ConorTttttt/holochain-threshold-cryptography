@@ -151,22 +151,27 @@ anchor=${field[1]-} layout=${field[2]-} key_kind=${field[3]-} key_ref=${field[4]
 separate=("${field[@]:6}")
 [ "${field[0]-}" = 1 ] || fail "custody.json schema '${field[0]-}' (want 1)"
 case $layout in
-  separated) pass "separated layout" ;;
+  production) fail "production custody is NOT VERIFIED: no independent snapshot witness or attested protected key source" ;;
+  hardened) warn "hardened candidate: software checks only; NOT production custody" ;;
+  separated) pass "separated layout (NOT production custody)" ;;
   development) warn "development layout: one user may run the node, signer and Lair" ;;
   *) fail "unknown layout '$layout'" ;;
 esac
+if [ "$layout" = hardened ] && [ "$key_kind" != systemd_credential ]; then
+  fail "hardened candidate requires a separately injected systemd credential"
+fi
 
 case $key_kind in
   state_directory)
     private "$state/storage.key" "master key storage.key" 1 1
-    if [ "$layout" = separated ]; then fail "separated layout with the master key inside the state directory"
+    if [ "$layout" != development ]; then fail "non-development layout with the master key inside the state directory"
     else warn "master key sits beside the journal it protects (development layout only)"; fi ;;
   file | systemd_credential)
     if [ -e "$state/storage.key" ] || [ -L "$state/storage.key" ]; then
       fail "storage.key is still in the state directory although the key source is external"
     fi
     if [ "$key_kind" = systemd_credential ]; then
-      info "master key from systemd credential '$key_ref' (LoadCredentialEncrypted=); not visible outside the unit"
+      info "systemd credential '$key_ref' selected; cannot attest TPM sealing or LoadCredentialEncrypted from this audit"
     else
       case $key_ref in "$state"/* | "$(readlink -f -- "$state")"/*) fail "external key file is inside the state directory" ;; esac
       if [ -L "$key_ref" ] || ! m=$(meta "$key_ref"); then fail "external key file $key_ref is missing or a symlink"
@@ -202,10 +207,13 @@ else
   ancestors "anchor" "$anchor"
   read -r pu _ pmo _ _ <<<"$(meta "$(dirname -- "$anchor")")"
   if [ "$pu" = "$custody_uid" ] || (( 8#$pmo & 8#022 )); then
-    if [ "$layout" = separated ]; then fail "separated layout: the anchor's directory is writable by the custody user"
+    if [ "$layout" != development ]; then fail "non-development layout: the anchor's directory is writable by the custody user"
     else warn "the custody user can replace the anchor (its directory is writable by it)"; fi
   else
     pass "anchor directory belongs to uid $pu and is not writable by the custody user"
+  fi
+  if [ "$layout" = hardened ] && [ "$pu" != 0 ]; then
+    fail "hardened candidate requires a root-owned anchor parent"
   fi
   if attrs=$(lsattr -d -- "$anchor" 2>/dev/null); then
     case ${attrs%% *} in *a*) pass "anchor is append-only (chattr +a)" ;; *) warn "anchor is not append-only; set chattr +a as root" ;; esac
@@ -232,13 +240,24 @@ print(row[0] if row else "")
 fi
 
 if [ "$layout" = separated ] && [ ${#separate[@]} -eq 0 ]; then fail "separated layout without separate_from"; fi
+if [ "$layout" = hardened ] && [ ${#separate[@]} -ne 3 ]; then
+  fail "hardened candidate requires exactly three role roots (relay, Lair signer, conductor)"
+fi
+role_uids=" "
 for path in "${separate[@]}" "${other_roots[@]}"; do
   [ -n "$path" ] || continue
   if ! m=$(meta "$path"); then fail "$path does not exist"; continue; fi
-  read -r u _ <<<"$m"
+  read -r u _ mo _ _ <<<"$m"
   if [ "$u" != "$custody_uid" ]; then pass "$path belongs to uid $u, not the custody user"
-  elif [ "$layout" = separated ]; then fail "$path belongs to the custody user (uid $u)"
+  elif [ "$layout" != development ]; then fail "$path belongs to the custody user (uid $u)"
   else warn "$path belongs to the custody user (uid $u): node, signer and Lair share one user"; fi
+  if [ "$layout" = hardened ]; then
+    if [ -L "$path" ] || [ ! -d "$path" ] || [ "$mo" != 700 ] || [ "$u" = 0 ]; then
+      fail "hardened role root $path must be a non-symlinked 0700 directory of a non-root user"
+    fi
+    case $role_uids in *" $u "*) fail "hardened role root UID $u is reused" ;; esac
+    role_uids="$role_uids$u "
+  fi
 done
 [ -n "$retention" ] && info "retired shares are erased after $retention day(s) by mpc-custody apply-retention"
 finish

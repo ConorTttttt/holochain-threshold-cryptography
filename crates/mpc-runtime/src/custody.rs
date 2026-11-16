@@ -77,6 +77,13 @@ pub enum Layout {
     /// anchor's directory belongs to another user, and the node (conductor,
     /// relay) and Lair run as other users (`separate_from`).
     Separated,
+    /// Strict, software-checked candidate profile. Still NOT production:
+    /// neither sealed credentials nor an independent rollback witness can
+    /// be attested by this process. Requires three distinct role UIDs.
+    Hardened,
+    /// Reserved for independently witnessed, hardware-protected custody.
+    /// This build ALWAYS rejects it.
+    Production,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +127,22 @@ impl CustodyConfig {
     }
     pub fn validate(&self, state_dir: &Path) -> RResult<()> {
         if self.schema != CONFIG_SCHEMA { return Err(RuntimeError::Wire("unsupported custody.json schema")); }
+        if self.layout == Layout::Production {
+            if matches!(&self.master_key, KeySource::StateDirectory) {
+                return Err(unsafe_layout("production forbids a state-directory master key".into()));
+            }
+            // A separate path or local append-only anchor cannot attest a
+            // hardware-protected key or storage outside a VM snapshot domain.
+            return Err(unsafe_layout("production custody is NOT VERIFIED: independent rollback witness and hardware-backed key source are required; startup refused".into()));
+        }
+        if self.layout == Layout::Hardened {
+            if !matches!(&self.master_key, KeySource::SystemdCredential { .. }) {
+                return Err(unsafe_layout("hardened layout requires an injected systemd credential, not a local key file".into()));
+            }
+            if self.separate_from.len() != 3 {
+                return Err(unsafe_layout("hardened layout requires exactly three ordered role roots: relay, Lair signer, conductor".into()));
+            }
+        }
         if !normal_absolute(&self.anchor) || self.anchor.parent().is_none() {
             return Err(unsafe_layout("the anchor must be a normalised absolute path".into()));
         }
@@ -127,7 +150,7 @@ impl CustodyConfig {
             return Err(unsafe_layout("the anchor must be outside the state directory, or restoring the directory rewinds it".into()));
         }
         match &self.master_key {
-            KeySource::StateDirectory if self.layout == Layout::Separated => {
+            KeySource::StateDirectory if self.layout != Layout::Development => {
                 return Err(unsafe_layout("the separated layout forbids a master key inside the state directory".into()));
             }
             KeySource::StateDirectory => {}
@@ -147,7 +170,7 @@ impl CustodyConfig {
         if self.separate_from.iter().any(|p| !normal_absolute(p)) {
             return Err(unsafe_layout("separate_from paths must be normalised absolute paths".into()));
         }
-        if self.layout == Layout::Separated && self.separate_from.is_empty() {
+        if self.layout != Layout::Development && self.separate_from.is_empty() {
             return Err(unsafe_layout("the separated layout must name the Lair and node paths in separate_from".into()));
         }
         if self.retired_share_retention_days.is_some_and(|d| d > 36_500) {
@@ -292,7 +315,11 @@ fn load_key(dir: &Path, config: &CustodyConfig) -> RResult<Zeroizing<[u8; 32]>> 
                         .filter(|p| p.is_absolute())
                         .ok_or_else(|| unsafe_layout(format!("{CREDENTIALS_ENV} is not set; run under systemd \
                             with LoadCredentialEncrypted={name}:...")))?;
-                    base.join(name)
+                    let credential = base.join(name);
+                    if config.layout != Layout::Development && inside(&credential, dir) {
+                        return Err(unsafe_layout("separated credential must not resolve inside the state directory".into()));
+                    }
+                    credential
                 }
                 KeySource::StateDirectory => unreachable!(),
             }
@@ -319,9 +346,12 @@ fn anchor_location(config: &CustodyConfig) -> RResult<()> {
         return Err(unsafe_layout(format!("{} must be a regular file owned by this user, not writable \
             by group or others, with one link", anchor.display())));
     }
-    if config.layout == Layout::Separated {
-        let parent = fs::metadata(anchor.parent().unwrap_or(Path::new("/")))?;
-        if parent.uid() == euid() || parent.mode() & 0o022 != 0 {
+    if config.layout != Layout::Development {
+        let parent_path = anchor.parent().unwrap_or(Path::new("/"));
+        let parent = fs::symlink_metadata(parent_path)?;
+        if !parent.is_dir() || parent.file_type().is_symlink() ||
+           parent.uid() == euid() || parent.mode() & 0o022 != 0 ||
+           (config.layout == Layout::Hardened && parent.uid() != 0) {
             return Err(unsafe_layout(format!("separated layout: the directory of {} must belong to another \
                 user (root) and not be writable by the custody user", anchor.display())));
         }
@@ -369,6 +399,23 @@ impl Custody {
             if fs::metadata(path)?.uid() == euid() {
                 return Err(unsafe_layout(format!("{} belongs to the custody user; the node, the signer and \
                     Lair must run as different users", path.display())));
+            }
+        }
+        if config.layout == Layout::Hardened {
+            // The ordered roots represent relay, Lair signer and conductor.
+            // This checks filesystem ownership, not running process identity.
+            let mut owners = Vec::new();
+            for (role, path) in ["relay", "Lair signer", "conductor"].iter()
+                .zip(&config.separate_from) {
+                let meta = fs::symlink_metadata(path)?;
+                if !meta.is_dir() || meta.file_type().is_symlink() ||
+                   meta.uid() == 0 || meta.uid() == euid() ||
+                   meta.mode() & 0o777 != 0o700 || owners.contains(&meta.uid()) {
+                    return Err(unsafe_layout(format!(
+                        "hardened {role} root {} must be 0700, non-symlinked and owned by a distinct non-root UID",
+                        path.display())));
+                }
+                owners.push(meta.uid());
             }
         }
         anchor_location(&config)?;

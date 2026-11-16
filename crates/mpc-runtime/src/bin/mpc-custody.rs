@@ -12,7 +12,9 @@ mod cli {
     pub const USAGE: &str = "usage:
   mpc-custody verify <state-dir>
   mpc-custody init <state-dir> --anchor <abs-file> [--key-file <abs-file> | --key-credential <name>]
-              [--separated --separate-from <abs-path>...] [--retention-days <n>]
+              [--separated | --hardened | --production] [--separate-from <abs-path>...] [--retention-days <n>]
+              --hardened expects exactly three ordered roots: relay, Lair signer, conductor
+              --production always refuses until hardware key custody and an independent witness are implemented
   mpc-custody backup <state-dir> --out <abs-file>
   mpc-custody restore --bundle <abs-file> --state-dir <abs-new-dir> --master-key-file <abs-file> --confirm-restore
   mpc-custody retire-epoch <state-dir> --proposal-hex <78-hex> --epoch <n> --reason <text> --confirm-retire
@@ -75,7 +77,7 @@ mod cli {
                 Flags::parse(rest, &[])?;
                 let custody = Custody::load(&dir).map_err(|e| e.to_string())?;
                 let found = custody.inspect().map_err(|e| e.to_string())?;
-                println!("PASS: layout {:?}, key source {:?}", custody.config().layout, custody.config().master_key);
+                println!("PASS: layout {:?}, key source {:?}; NOT PRODUCTION VERIFIED", custody.config().layout, custody.config().master_key);
                 println!("journal_seq={} anchor_seq={} anchor_records={} skipped_anchor_lines={} bound={}",
                     found.head.seq, found.anchor.last.seq, found.anchor.records, found.anchor.skipped_lines,
                     found.head.anchor_id.is_some());
@@ -87,7 +89,11 @@ mod cli {
             }
             "init" => {
                 let (dir, rest) = dir(rest)?;
-                let f = Flags::parse(rest, &["--separated"])?;
+                let f = Flags::parse(rest, &["--separated", "--hardened", "--production"])?;
+                if ["--separated", "--hardened", "--production"].iter()
+                    .filter(|name| f.has(name)).count() > 1 {
+                    return Err("choose only one custody layout".into());
+                }
                 let master_key = match (f.one("--key-file")?, f.one("--key-credential")?) {
                     (None, None) => KeySource::StateDirectory,
                     (Some(path), None) => KeySource::File { path: PathBuf::from(path) },
@@ -96,13 +102,16 @@ mod cli {
                 };
                 let config = CustodyConfig {
                     schema: 1, anchor: PathBuf::from(f.need("--anchor")?), master_key,
-                    layout: if f.has("--separated") { Layout::Separated } else { Layout::Development },
+                    layout: if f.has("--production") { Layout::Production }
+                        else if f.has("--hardened") { Layout::Hardened }
+                        else if f.has("--separated") { Layout::Separated }
+                        else { Layout::Development },
                     separate_from: f.all("--separate-from").into_iter().map(PathBuf::from).collect(),
                     retired_share_retention_days: f.one("--retention-days")?
                         .map(|d| d.parse().map_err(|_| "invalid --retention-days")).transpose()?,
                 };
                 custody::adopt(&dir, &config).map_err(|e| e.to_string())?;
-                println!("PASS: custody.json written and anchor created at {}", config.anchor.display());
+                println!("PASS: custody.json written and anchor created at {}; NOT PRODUCTION VERIFIED", config.anchor.display());
                 println!("Existing journal state was trusted as it stands (trust on first use).");
                 Ok(())
             }
