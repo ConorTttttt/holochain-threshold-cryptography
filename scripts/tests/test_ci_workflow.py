@@ -5,6 +5,7 @@ These checks do not execute GitHub Actions, Nix, Cargo, or Holochain.
 from __future__ import annotations
 
 import subprocess
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -54,7 +55,21 @@ class CiWorkflow(unittest.TestCase):
         commands = "\n".join(c for j, c in self.commands() if j == "native")
         self.assertIn("if test -f crates/holochain-dkg-sdk/Cargo.toml; then", commands)
         self.assertIn("cargo test --offline --locked -p holochain-dkg-sdk --all-targets", commands)
+        self.assertIn("cargo test --offline --locked -p holochain-dkg-sdk --all-targets --features native-holochain", commands)
         self.assertIn("NOT RUN: SDK crate is not yet on this branch", commands)
+
+    def test_privileged_live_write_example_requires_opt_in_feature(self):
+        manifest_path = ROOT / "crates/mpc-dkg-worker/Cargo.toml"
+        manifest = tomllib.loads(manifest_path.read_text())
+        declared = [example for example in manifest.get("example", [])
+                    if example.get("name") == "phase5c_live_writes"]
+        self.assertEqual(len(declared), 1)
+        self.assertIn("lair-signer", declared[0].get("required-features", []))
+        commands = "\n".join(c for j, c in self.commands() if j == "native")
+        self.assertIn(
+            "cargo check --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --example phase5c_live_writes",
+            commands)
+        self.assertNotIn("cargo run", commands)
 
     def test_all_shell_steps_have_valid_bash_syntax(self):
         for job, command in self.commands():

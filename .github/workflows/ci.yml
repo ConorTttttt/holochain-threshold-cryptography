@@ -67,10 +67,14 @@ jobs:
           nix develop --no-write-lock-file --command bash -euo pipefail -c '
             export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-s1
             cargo check --offline --locked --workspace --all-targets
+            # Compile the explicitly gated Lair example without executing any
+            # interactive credential or live-conductor operation.
+            cargo check --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --example phase5c_live_writes
             npm run test:native
             cargo test --offline --locked -p holochain-mpc-dkg-worker --features conductor-client --lib
             if test -f crates/holochain-dkg-sdk/Cargo.toml; then
               cargo test --offline --locked -p holochain-dkg-sdk --all-targets
+              cargo test --offline --locked -p holochain-dkg-sdk --all-targets --features native-holochain
             else
               echo "NOT RUN: SDK crate is not yet on this branch"
             fi

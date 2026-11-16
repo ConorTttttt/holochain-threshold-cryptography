@@ -38,7 +38,8 @@ correct status until its invocation and exit code appear in a log.
 
 | Layer | Command | CI |
 | --- | --- | --- |
-| Workspace and all-targets compilation | `cargo check --offline --locked --workspace --all-targets` | PR/native |
+| Workspace and all-targets compilation (excluding gated Lair example) | `cargo check --offline --locked --workspace --all-targets` | PR/native |
+| Opt-in live-write example **compile only**, no conductor or Lair connection | `cargo check --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --example phase5c_live_writes` | PR/native |
 | Holochain version pins | `python3 -I scripts/check_holochain_versions.py` | PR/static |
 | Approved package and dependency inventory | `python3 -I scripts/check_release.py` | PR/static |
 | Release validator unit tests | `npm run test:release-tools` | PR/static |
@@ -49,6 +50,7 @@ correct status until its invocation and exit code appear in a log.
 | Worker IPC, relay, restart, share custody, signing | `npm run test:native` | PR/native |
 | Conductor-client optional feature unit tests | `cargo test --offline --locked -p holochain-mpc-dkg-worker --features conductor-client --lib` | PR/native |
 | SDK units and API contracts | `cargo test --offline --locked -p holochain-dkg-sdk --all-targets` | PR/native **only if SDK manifest exists** |
+| SDK optional native Holochain integration feature (unit tests, not Sweettests) | `cargo test --offline --locked -p holochain-dkg-sdk --all-targets --features native-holochain` | PR/native **only if SDK manifest exists** |
 | Coordinator native unit tests | `npm run test:coordinator-unit` | PR/native via `test:native` |
 | Coordinator, FROST DKG and worker/bridge Sweettests | `npm run test:sweettest` | Push/manual integration |
 | Capability revocation Sweettest | `cargo test --offline --locked -p mpc --test revoke_cap_grant -- --nocapture --test-threads=1` | Push/manual integration |
@@ -121,3 +123,75 @@ Historical results in `docs/V040_STAGE2C_COORDINATOR_HARDENING.md` are
 development history, not evidence of tests on an integrated Sprint 1 tree.
 
 Passing unit tests alone does not establish an audited or releasable SDK.
+
+## Hosted-runner recovery evidence (16 November 2026)
+
+See [CI_RUNNER_RECOVERY.md](CI_RUNNER_RECOVERY.md) for precise run IDs,
+attempts, root-cause separation, observed tool versions, and outstanding
+operator-only diagnostics.
+
+- Runs `43771483501` (attempt 1) and `43771920518` (attempt 1)
+  recorded failed native/static jobs with **zero steps** and no runner assigned.
+  GitHub did not expose the scheduling reason through accessible job metadata.
+  Do not attribute these failures to billing, permissions, or a runner shortage
+  without independent account-level evidence.
+- Run `43771920518`, **attempt 2**, allocated Ubuntu 24.04 runners and
+  executed Nix, static tests, and Rust compilation. Static: **PASS**,
+  23 Python tests. Native: **FAIL**, 12 unresolved imports while compiling
+  `phase5c_live_writes` without its optional `lair-signer` feature.
+  Thus hosted runner availability is demonstrated for this attempt, **not**
+  proof that every future run will be provisioned.
+- The Phase 5C example is now declared with
+  `required-features = ["lair-signer"]` in its Cargo manifest.
+  The default workspace all-targets check no longer automatically requests
+  that example, while a separate compile-only feature-enabled check protects
+  it against build regressions. This does **not** invoke Lair.
+- SDK tests are **NOT RUN** on PR #4, which still does not contain the SDK
+  crate or the integrated Sprint 1 workspace. They are conditional on the
+  crate's presence in the eventual integration branch, where both default
+  and `native-holochain` feature builds must pass. Protect the
+  `Rust and native protocol checks` CI check on the target integration branch.
+  A passing conditional job on the isolated PR #4 is **not** SDK evidence.
+
+### Equivalent local validation (no GitHub-hosted runner)
+
+Use an ephemeral Linux x86_64 workspace and the exact intended **integrated**
+commit, not the PR #4 draft in isolation:
+
+```sh
+git checkout <reviewed-integrated-commit>
+nix develop --no-write-lock-file --command bash -euo pipefail -c '
+  rustc --version
+  cargo --version
+  hc --version
+  node --version
+  python3 -I scripts/check_holochain_versions.py
+  python3 -I scripts/check_release.py
+  npm run test:release-tools
+'
+nix develop --no-write-lock-file --command cargo fetch --locked
+mkdir -p /tmp/dkg-s1
+nix develop --no-write-lock-file --command bash -euo pipefail -c '
+  export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-s1
+  cargo check --offline --locked --workspace --all-targets
+  cargo check --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --example phase5c_live_writes
+  npm run test:native
+  cargo test --offline --locked -p holochain-mpc-dkg-worker --features conductor-client --lib
+  test -f crates/holochain-dkg-sdk/Cargo.toml || {
+    echo "FAIL: SDK crate absent from intended integration"; exit 1;
+  }
+  cargo test --offline --locked -p holochain-dkg-sdk --all-targets
+  cargo test --offline --locked -p holochain-dkg-sdk --all-targets --features native-holochain
+  git diff --exit-code -- Cargo.lock
+'
+```
+
+The static inventory check is deliberately fail-closed: it may reject
+new SDK packages or changed dependencies pending **separate operator
+inventory approval**. Never regenerate `scripts/release_inventory.json`,
+`scripts/release_hashes.json` or record release identities to quiet CI.
+
+Continue to run disposable Sweettests only via the separate slower
+integration path (`npm run test:sweettest`, followed by the documented
+revocation test), using temporary conductor data and test credentials.
+The release workflow remains manual, read-only against approved identities.
