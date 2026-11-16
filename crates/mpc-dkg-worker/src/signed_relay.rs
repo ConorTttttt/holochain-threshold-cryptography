@@ -24,6 +24,8 @@ pub enum SignIntent<'a> {
     /// Mandatory for DKG and signing: never substituted with ReadInbox.
     ReadInboxSlots,
     ReadProbeSession,
+    /// Only the dedicated FROST status signer accepts this distinct IPC intent.
+    ReadFrostCeremonyStatus,
     ReadEncryptionKeys,
     RegisterEncryptionKey([u8;32]),
     Publish(&'a Envelope),
@@ -35,7 +37,7 @@ pub enum SignIntent<'a> {
 impl SignIntent<'_> {
     pub fn call(&self) -> MpcCall {
         match self {
-            SignIntent::ReadProbeSession => MpcCall::GetProbeSessionStatus,
+            SignIntent::ReadProbeSession | SignIntent::ReadFrostCeremonyStatus => MpcCall::GetProbeSessionStatus,
             SignIntent::ReadInbox => MpcCall::GetInbox,
             SignIntent::ReadInboxSlots => MpcCall::GetInboxSlots,
             SignIntent::ReadEncryptionKeys => MpcCall::GetEncryptionKeyBindings,
