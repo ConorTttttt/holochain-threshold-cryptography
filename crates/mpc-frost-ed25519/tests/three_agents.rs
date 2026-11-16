@@ -288,3 +288,196 @@ fn activated_group_approved_intent_nonce_wal_and_threshold_signing() -> PResult<
     assert!(verify_activated_artifact(&binding,b"tampered",&artifact,&active).is_err());
     Ok(())
 }
+
+
+/// Bounded deterministic input corpus; each seed/case pair gives the same
+/// attacker-controlled bytes. Real FROST DKG itself continues using OsRng.
+const ADVERSARIAL_SEEDS: [u64; 4] = [
+    1, 0x3141_5926_5358_9793, 0x9e37_79b9_7f4a_7c15, 0xffff_ffff_ffff_fffe,
+];
+fn next_adversarial(state: &mut u64) -> u64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    (*state).wrapping_mul(0x2545_f491_4f6c_dd1d)
+}
+
+#[test]
+fn bounded_frame_and_sealed_decoder_malformed_inputs_do_not_panic() -> PResult<()> {
+    use holochain_mpc_core::Envelope;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let (binding, members) = fixture();
+    let (_party, r1) = DkgParty::begin(binding.clone(), &members[0])?;
+    let valid_frame = Frame { proposal_action: binding.proposal_action.clone(),
+        operation_id: binding.spec.session_id, message: Message::DkgRound1(r1) };
+    let valid = valid_frame.encode(&binding, &members[0], &members[1], 1)?;
+    assert!(Frame::decode(&binding, &valid, &members[1], &members[0]).is_ok());
+    for seed in ADVERSARIAL_SEEDS {
+        let mut rng = seed;
+        for case in 0..128usize {
+            let len = 1 + (next_adversarial(&mut rng) as usize % 2048);
+            let bytes = match case % 4 {
+                0 => vec![b'['; len], // nesting bombs, rejected by JSON depth checks
+                1 => vec![0xff; len], // invalid UTF-8
+                2 => vec![b'0'; len], // huge scalar / trailing bytes
+                _ => (0..len).map(|_| next_adversarial(&mut rng) as u8).collect(),
+            };
+            let env = Envelope::new(&binding.spec, members[0].clone(),
+                Some(members[1].clone()), 1, 1, bytes.clone())?;
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                Frame::decode(&binding, &env, &members[1], &members[0])
+            }));
+            assert!(outcome.is_ok(), "frame panic seed={seed:#x} case={case}");
+            assert!(outcome.unwrap().is_err(), "malformed frame accepted seed={seed:#x} case={case}");
+
+            let sealed_env = Envelope::new(&binding.spec, members[0].clone(),
+                Some(members[1].clone()), 3, 1, bytes)?;
+            let receiver = NativeChannelKey::generate();
+            let sender = NativeChannelKey::generate();
+            let opened = catch_unwind(AssertUnwindSafe(|| open_dkg_round_two(
+                &binding, &sealed_env, &members[1], &members[0],
+                &receiver, sender.public_key()
+            )));
+            assert!(opened.is_ok(), "sealed parser panic seed={seed:#x} case={case}");
+            assert!(opened.unwrap().is_err(), "bad sealed packet accepted seed={seed:#x} case={case}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn frame_rejects_proposal_session_and_transport_mismatch_after_rehashing() -> PResult<()> {
+    use holochain_mpc_core::Envelope;
+    let (binding, members) = fixture();
+    let (_party, r1) = DkgParty::begin(binding.clone(), &members[0])?;
+    let good = Frame { proposal_action: binding.proposal_action.clone(),
+        operation_id: binding.spec.session_id, message: Message::DkgRound1(r1) };
+    let mut bad_proposal = good.clone();
+    bad_proposal.proposal_action[0] ^= 1;
+    let mut bad_operation = good.clone();
+    bad_operation.operation_id = commitment("wrong-operation", b"wrong operation");
+    for frame in [bad_proposal, bad_operation] {
+        // Recreate the *correct* envelope hash so failure is in the cryptographic
+        // binding layer, not merely the outer payload checksum.
+        let env = Envelope::new(&binding.spec, members[0].clone(),
+            Some(members[1].clone()), 1, 1, serde_json::to_vec(&frame)?)?;
+        assert!(Frame::decode(&binding, &env, &members[1], &members[0]).is_err());
+    }
+    let mut round = good.encode(&binding, &members[0], &members[1], 1)?;
+    round.round = 2;
+    assert!(Frame::decode(&binding, &round, &members[1], &members[0]).is_err());
+    let ok = good.encode(&binding, &members[0], &members[1], 1)?;
+    assert!(Frame::decode(&binding, &ok, &members[1], &members[2]).is_err());
+    assert!(Frame::decode(&binding, &ok, &members[2], &members[0]).is_err());
+    let mut wrong_proposal_binding = binding.clone();
+    wrong_proposal_binding.proposal_action[0] ^= 1;
+    assert!(Frame::decode(&wrong_proposal_binding, &ok, &members[1], &members[0]).is_err());
+    Ok(())
+}
+
+#[test]
+fn tampered_round_two_peer_share_cannot_complete_dkg_or_activate() -> PResult<()> {
+    let (binding, members) = fixture();
+    let mut parties = BTreeMap::new();
+    let mut public_rounds = BTreeMap::new();
+    for member in &members {
+        let (party, public) = DkgParty::begin(binding.clone(), member)?;
+        let id = binding.id_of(member)?;
+        parties.insert(id, party);
+        public_rounds.insert(id, public);
+    }
+    let gate = verified_gate(&binding, &members, &public_rounds)?;
+    let mut round_two = BTreeMap::new();
+    for (id, party) in &mut parties {
+        round_two.insert(*id, party.part2(&public_rounds, &gate)?);
+    }
+    let recipient = binding.id_of(&members[0])?;
+    let sender_b = binding.id_of(&members[1])?;
+    let sender_c = binding.id_of(&members[2])?;
+    let mut incoming = BTreeMap::new();
+    incoming.insert(sender_b, round_two[&sender_b][&recipient].clone());
+    // The C-labelled package contains B's valid share; FROST's public
+    // commitment check must reject it before yielding a usable key.
+    incoming.insert(sender_c, round_two[&sender_b][&recipient].clone());
+    assert!(parties.get_mut(&recipient).ok_or("missing recipient")?
+        .part3_with_evidence(&public_rounds, &incoming, &gate).is_err());
+    // No GroupActivation or ActivatedGroup was created from this bad input.
+    Ok(())
+}
+
+#[test]
+fn forged_share_attribution_cross_operation_replay_and_peer_commitments_fail() -> PResult<()> {
+    use provider::AuthenticatedShareCollector;
+    use holochain_mpc_security::activation::{GroupActivation, GroupDescriptor};
+    let (binding, members, mut keys, public, echo_hash) = generate()?;
+    let operation_a = commitment("s17-signing-operation", b"A");
+    let operation_b = commitment("s17-signing-operation", b"B");
+    let message = b"test fixture: no assets";
+    let mut signers = BTreeMap::new();
+    let mut commitments = BTreeMap::new();
+    for member in &members[..2] {
+        let id = binding.id_of(member)?;
+        let mut signer = Signer::new(binding.clone(), member,
+            keys.remove(&id).ok_or("missing key")?)?;
+        commitments.insert(id, signer.commit(operation_a, message)?);
+        signers.insert(id, signer);
+    }
+    let signing_a = signing_package(&binding, operation_a, message, commitments.clone())?;
+    let mut shares = BTreeMap::new();
+    for (id, signer) in &mut signers {
+        shares.insert(*id, signer.sign(operation_a, &signing_a)?);
+    }
+    let group_desc = GroupDescriptor {
+        proposal_action: binding.proposal_action.clone(), spec: binding.spec.clone(),
+        epoch: 0, dkg_transcript_hash: echo_hash,
+        public_key_package_hash: commitment("frost-public-key-package-v1", &serde_json::to_vec(&public)?),
+        group_verifying_key: public.verifying_key().serialize()?,
+        encryption_key_binding_actions: vec![vec![11; 39], vec![12; 39], vec![13; 39]],
+    };
+    let mut activation = GroupActivation::new(group_desc.clone())?;
+    for member in &members { activation.attest(member, group_desc.digest()?)?; }
+    let active = activation.finalize()?;
+
+    let a = binding.id_of(&members[0])?;
+    let b = binding.id_of(&members[1])?;
+    let mut wrong_identity = AuthenticatedShareCollector::new(binding.clone(), &signing_a)?;
+    // Bytes authored by signer A are delivered over B's authenticated channel,
+    // and vice versa. Attribution MUST use provenance, not an untrusted label.
+    wrong_identity.ingest(&members[1], shares[&a].clone(), &signing_a)?;
+    wrong_identity.ingest(&members[0], shares[&b].clone(), &signing_a)?;
+    assert!(wrong_identity.aggregate(&binding, operation_a, message,
+        &signing_a, &public, &active).is_err());
+    let mut outsider = AuthenticatedShareCollector::new(binding.clone(), &signing_a)?;
+    assert!(outsider.ingest(&members[2], shares[&a].clone(), &signing_a).is_err());
+    assert!(outsider.ingest(&vec![99; 39], shares[&a].clone(), &signing_a).is_err());
+
+    let signing_b = signing_package(&binding, operation_b, message, commitments.clone())?;
+    assert!(aggregate(&binding, operation_b, message, &signing_b, &shares, &public).is_err());
+    assert!(aggregate(&binding, operation_b, message, &signing_a, &shares, &public).is_err());
+    let frame = Frame { proposal_action: binding.proposal_action.clone(),
+        operation_id: operation_a, message: Message::SignatureShare(shares[&a].clone()) };
+    let wire = frame.encode(&binding, &members[0], &members[2], 101)?;
+    let decoded = Frame::decode(&binding, &wire, &members[2], &members[0])?;
+    // Frame::decode validates wire and ceremony context, but it has NO
+    // expected-operation argument. The consuming dispatcher MUST compare
+    // operation_id before ingesting a frame into any signing operation.
+    assert_eq!(decoded.operation_id, operation_a);
+    assert_ne!(decoded.operation_id, operation_b);
+
+    let mut tampered_peer = commitments;
+    tampered_peer.insert(b, tampered_peer[&a]);
+    let changed = signing_package(&binding, operation_a, message, tampered_peer)?;
+    assert!(aggregate(&binding, operation_a, message, &changed, &shares, &public).is_err());
+
+    let artifact = aggregate(&binding, operation_a, message, &signing_a, &shares, &public)?;
+    verify_artifact(&binding, message, &artifact, &public.verifying_key().serialize()?)?;
+    let json = serde_json::to_value(&artifact)?;
+    let object = json.as_object().ok_or("artifact must be an object")?;
+    // Explicit public allowlist: neither the long-term FROST share nor nonce
+    // state is a field of SignedArtifact. This is NOT a memory-leak proof.
+    assert_eq!(object.len(), 5);
+    for key in ["proposal_action", "session_id", "operation_id", "public_key", "signature"] {
+        assert!(object.contains_key(key));
+    }
+    Ok(())
+}
