@@ -98,7 +98,13 @@ impl UnixMpcSigner {
                     verification_artifact:verification_artifact.to_vec() })),
             _ => (None,None,None),
         };
-        SignerRequest { version:1,operation:intent.call().name().into(),
+        // A distinct signer IPC intent separates FROST status authority from
+        // transport-probe status authority even though both target the same
+        // coordinator function. The probe profile cannot accept this name.
+        let operation = if matches!(intent, SignIntent::ReadFrostCeremonyStatus) {
+            "frost_ceremony_status_v1".to_owned()
+        } else { intent.call().name().to_owned() };
+        SignerRequest { version:1,operation,
             binding:SignerBinding::from(&self.pin),envelope,public_key,result }
     }
 
@@ -209,6 +215,17 @@ mod tests {
         let (bytes,_) = params.serialize_and_hash().unwrap();
         ZomeCallParamsSigned::new(bytes,Signature([0;64])) // mock signer; not valid on real conductor
     }
+    #[test]
+    fn frost_status_ipc_intent_is_not_transport_probe_intent() {
+        let signer = UnixMpcSigner { socket_path: PathBuf::from("/unused"), pin: pin() };
+        let frost = signer.request(&SignIntent::ReadFrostCeremonyStatus);
+        let probe = signer.request(&SignIntent::ReadProbeSession);
+        assert_eq!(frost.operation, "frost_ceremony_status_v1");
+        assert_eq!(probe.operation, "get_session_status");
+        assert_eq!(frost.binding, probe.binding);
+        assert!(frost.envelope.is_none() && frost.public_key.is_none() && frost.result.is_none());
+    }
+
     #[tokio::test]
     async fn signer_rpc_enforces_binding_and_rejects_other_operation() {
         let tmp=tempfile::tempdir().unwrap();
