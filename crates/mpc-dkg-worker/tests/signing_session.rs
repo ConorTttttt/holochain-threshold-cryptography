@@ -763,17 +763,49 @@ async fn group_renewal_uses_fresh_proposal() {
     assert_eq!(activation.finalize().unwrap().digest(), digest);
 }
 
-/// Known-red lifecycle acceptance test. The current API takes only descriptor
-/// and attestations; it has no group-expired/remaining-capacity input.
-/// Unignore only after a reviewed, durable group-expiration gate is integrated.
+/// Known-red group-lifetime acceptance test. Historical activation evidence
+/// remains valid for *verification* after retirement. What must be denied is
+/// starting new signing on that proposal, even when the over-quota evidence
+/// names a previous (different-sequence) operation. Currently run_signing
+/// detects only current-operation withheld slots; it has no durable expiry gate.
 #[tokio::test]
-#[ignore = "S1-M03 OPEN: exhausted group has no durable expiry/rekey admission gate"]
+#[ignore = "S1-M03 OPEN: no durable group-retirement admission gate for old over-quota evidence"]
 async fn old_exhausted_group_is_not_silently_reactivated() {
     let f = fixture().await;
+    let plan = f.plan(90, &[1, 3]);
     let net = Arc::new(Mutex::new(SignNet::default()));
     f.activate_all(&net);
+    for who in [1, 3] { f.approve(&net, &plan, &[who]); }
     let votes = net.lock().unwrap().activations.clone();
-    let _consumed_sender_budget = mpc::sender_quota(&f.binding.spec);
-    assert!(activated_group(&f.descriptor, &votes).unwrap().is_none(),
-        "KNOWN RED: old activation remains valid without an independent expiration gate");
+    assert!(activated_group(&f.descriptor, &votes).unwrap().is_some(),
+        "historic activation is still valid for verifying an old signature");
+
+    // Synthetic coordinator evidence that each selected recipient already
+    // holds a sender's over-quota record from a *previous* operation. Its
+    // sequence differs from the new plan, so the current relevant-slot guard
+    // skips it; a future group-wide exhaustion gate must deny new signing.
+    for (sender, recipient) in [(3_u8, 1_u8), (1_u8, 3_u8)] {
+        let older_sequence = if plan.sequence() == 1 { 2 } else { 1 };
+        let env = Envelope::new(&f.binding.spec, vec![sender; 39],
+            Some(vec![recipient; 39]), 4, older_sequence,
+            b"prior-operation-over-quota".to_vec()).unwrap();
+        net.lock().unwrap().over_quota.entry(vec![recipient; 39]).or_default()
+            .push(WithheldSlot { sender: env.sender.clone(), round: 4,
+                sequence: older_sequence, variants: vec![StoredVariant {
+                    envelope: env, storage_actions: vec![
+                        ActionHash::from_raw_32(vec![sender; 32])] }] });
+    }
+    let (mut s1, mut s3) = (store(f.dir.path(), &[1; 39]),
+        store(f.dir.path(), &[3; 39]));
+    let mut t1 = SignTransport { net: net.clone(), local: vec![1; 39] };
+    let mut t3 = SignTransport { net: net.clone(), local: vec![3; 39] };
+    let (r1, r3) = tokio::join!(
+        run_signing(&mut t1, &mut s1, f.custody(&[1; 39]),
+            &[1; 39], plan.clone(), poll()),
+        run_signing(&mut t3, &mut s3, f.custody(&[3; 39]),
+            &[3; 39], plan, poll())
+    );
+    assert!(r1.is_err() && r3.is_err(),
+        "KNOWN RED: past over-quota evidence must retire the group for new signing");
+    assert!(net.lock().unwrap().results.is_empty());
 }
