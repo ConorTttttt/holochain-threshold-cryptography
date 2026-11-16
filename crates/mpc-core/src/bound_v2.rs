@@ -5,7 +5,7 @@
 //! separate architectural decision. Never coerce a v1 envelope into v2.
 
 use crate::{
-    commitment, ContextHash, ParticipantId, PrimitiveError, SessionId, SessionSpec,
+    commitment, ParticipantId, PrimitiveError, SessionId, SessionSpec,
     MAX_MESSAGES_PER_SESSION, MAX_PAYLOAD_BYTES,
 };
 use serde::{Deserialize, Serialize};
@@ -198,11 +198,23 @@ impl BoundEnvelopeV2 {
 
 /// Separate v2 replay ledger. Do not reuse the legacy Inbox state or accept
 /// entries from another binding after the first successful delivery.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoundInboxV2 {
+    // Required field: legacy Inbox serialization must NOT decode as v2.
+    ledger_version: u16,
     binding_hash: Option<[u8; 32]>,
     seen: BTreeSet<(ParticipantId, u32, u64)>,
+}
+
+impl Default for BoundInboxV2 {
+    fn default() -> Self {
+        Self {
+            ledger_version: BOUND_WIRE_VERSION,
+            binding_hash: None,
+            seen: BTreeSet::new(),
+        }
+    }
 }
 
 impl BoundInboxV2 {
@@ -219,6 +231,10 @@ impl BoundInboxV2 {
         envelope: &BoundEnvelopeV2,
     ) -> Result<(), PrimitiveError> {
         envelope.validate_received(binding, local_recipient, authenticated_sender)?;
+        if self.ledger_version != BOUND_WIRE_VERSION ||
+            (self.binding_hash.is_none() && !self.seen.is_empty()) {
+            return Err(PrimitiveError::InvalidEnvelope("ambiguous or legacy replay ledger"));
+        }
         if self.binding_hash.is_some_and(|previous| previous != envelope.binding_hash) {
             return Err(PrimitiveError::InvalidEnvelope("inbox bound to another ceremony"));
         }
@@ -327,6 +343,9 @@ mod tests {
         envelope = msg(&a);
         envelope.payload.push(42);
         assert_eq!(envelope.validate_against(&a), Err(PrimitiveError::PayloadDigestMismatch));
+        let mut legacy_ledger = BoundInboxV2::new();
+        legacy_ledger.ledger_version = WIRE_VERSION;
+        assert!(legacy_ledger.accept(&a, &id(2), &id(1), &msg(&a)).is_err());
         let mut malformed = a;
         malformed.proposal_action = vec![3; 38];
         assert!(malformed.digest().is_err());
