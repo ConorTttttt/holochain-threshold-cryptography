@@ -457,3 +457,123 @@ mod custody_layout {
         Ok(())
     }
 }
+
+
+// Sprint 1.7 / Agent 20: deterministic SQLite fault injection for the
+// reservation and post-commit/pre-acknowledgement storage boundaries.
+#[test]
+fn reserve_nonce_storage_error_is_fail_closed_after_explicit_abort() -> T {
+    let dir = tempdir()?;
+    let path = dir.path().join("reserve-fault.sqlite");
+    let proposal = [7;39];
+    let operation = [41;32];
+    let signer = [1;39];
+    let mut db = store(&path)?;
+    db.start_deadline(&proposal, &operation, 5000)?;
+    // A true SQLite write error (no mock RuntimeStore implementation).
+    let injection = rusqlite::Connection::open(&path)?;
+    injection.execute_batch(
+        "CREATE TRIGGER agent20_fail_reserve BEFORE INSERT ON nonces
+         BEGIN SELECT RAISE(ABORT, 'agent20 injected reserve failure'); END;")?;
+    assert!(matches!(
+        db.reserve_nonce(&proposal, 0, &operation, &signer, 100),
+        Err(RuntimeError::Sql(_))
+    ));
+    let row_count: i64 = injection.query_row(
+        "SELECT COUNT(*) FROM nonces", [], |r| r.get(0))?;
+    assert_eq!(row_count, 0, "no FROST nonce may be generated before reservation");
+    // S15-L01 owns automatic SigningSession::begin abort accounting. Until that
+    // work lands, caller policy must explicitly record a terminal abort here.
+    db.record_abort(&proposal, &operation, "reserve storage failure")?;
+    injection.execute_batch("DROP TRIGGER agent20_fail_reserve;")?;
+    assert!(matches!(
+        db.reserve_nonce(&proposal, 0, &operation, &signer, 101),
+        Err(RuntimeError::Aborted)
+    ));
+    assert!(db.start_deadline(&proposal, &operation, 6000).is_err());
+    Ok(())
+}
+
+#[test]
+fn authorize_commitment_after_commit_before_ack_is_ambiguous_and_burned() -> T {
+    let dir = tempdir()?;
+    let path = dir.path().join("ambiguous.sqlite");
+    let anchor = dir.path().join("anchor");
+    let temporarily_moved = dir.path().join("anchor-held");
+    Anchor::create(&anchor, &key())?;
+    let (proposal, signer, operation) = ([7;39], [1;39], [42;32]);
+    let mut db = anchored(&path, &anchor)?;
+    db.start_deadline(&proposal, &operation, 5000)?;
+    db.reserve_nonce(&proposal, 0, &operation, &signer, 100)?;
+    // The anchor is normally present for both writes. Replace the anchor path
+    // with a directory only *after* reservation and before authorization.
+    // SQLite commits the published state, but post-commit check_anchor fails.
+    // This is a deterministic missing-ack fault even when running as root.
+    fs::rename(&anchor, &temporarily_moved)?;
+    fs::create_dir(&anchor)?;
+    assert!(db.authorize_commitment(
+        &proposal, 0, &operation, &signer, b"disposable public commitment").is_err());
+    let connection = rusqlite::Connection::open(&path)?;
+    let state: String = connection.query_row(
+        "SELECT state FROM nonces WHERE proposal=?1 AND operation=?2 AND signer=?3",
+        params![proposal.as_slice(), operation.as_slice(), signer.as_slice()],
+        |row| row.get(0))?;
+    assert_eq!(state, "published", "write committed despite missing ack");
+    drop(connection);
+    fs::remove_dir(&anchor)?;
+    fs::rename(&temporarily_moved, &anchor)?;
+    db.check_anchor()?; // reconcile the committed-but-unacknowledged write
+    drop(db);
+    let mut restarted = anchored(&path, &anchor)?;
+    assert!(matches!(
+        restarted.reserve_nonce(&proposal, 0, &operation, &signer, 101),
+        Err(RuntimeError::Conflict(_))
+    ));
+    // An ambiguous acknowledgement must never cause a second authorization.
+    assert!(restarted.authorize_commitment(
+        &proposal, 0, &operation, &signer, b"a different commitment").is_err());
+    Ok(())
+}
+
+
+#[test]
+fn custody_log_failure_rolls_back_nonce_reserve_and_publication() -> T {
+    let dir = tempdir()?;
+    let path = dir.path().join("custody-log-fault.sqlite");
+    let (proposal, signer, operation) = ([7;39], [1;39], [43;32]);
+    let mut db = store(&path)?;
+    db.start_deadline(&proposal, &operation, 5000)?;
+    let injection = rusqlite::Connection::open(&path)?;
+    injection.execute_batch(
+        "CREATE TRIGGER agent20_log_fault BEFORE INSERT ON custody_log
+         WHEN NEW.label = 'reserve-nonce'
+         BEGIN SELECT RAISE(ABORT, 'agent20 reserve chain failure'); END;")?;
+    assert!(matches!(
+        db.reserve_nonce(&proposal, 0, &operation, &signer, 100),
+        Err(RuntimeError::Sql(_))
+    ));
+    let count: i64 = injection.query_row("SELECT COUNT(*) FROM nonces", [], |r| r.get(0))?;
+    assert_eq!(count, 0, "reservation and custody-chain event must be atomic");
+    injection.execute_batch("DROP TRIGGER agent20_log_fault;")?;
+    db.reserve_nonce(&proposal, 0, &operation, &signer, 101)?;
+    injection.execute_batch(
+        "CREATE TRIGGER agent20_log_fault BEFORE INSERT ON custody_log
+         WHEN NEW.label = 'publish-commitment'
+         BEGIN SELECT RAISE(ABORT, 'agent20 publish chain failure'); END;")?;
+    assert!(matches!(
+        db.authorize_commitment(&proposal, 0, &operation, &signer, b"test commitment"),
+        Err(RuntimeError::Sql(_))
+    ));
+    let state: String = injection.query_row(
+        "SELECT state FROM nonces WHERE proposal=?1 AND operation=?2 AND signer=?3",
+        params![proposal.as_slice(), operation.as_slice(), signer.as_slice()],
+        |r| r.get(0))?;
+    assert_eq!(state, "reserved", "publish UPDATE must roll back with its custody event");
+    injection.execute_batch("DROP TRIGGER agent20_log_fault;")?;
+    db.authorize_commitment(&proposal, 0, &operation, &signer, b"test commitment")?;
+    assert!(matches!(
+        db.reserve_nonce(&proposal, 0, &operation, &signer, 102),
+        Err(RuntimeError::Conflict(_))
+    ));
+    Ok(())
+}
