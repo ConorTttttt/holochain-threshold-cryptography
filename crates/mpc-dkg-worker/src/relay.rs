@@ -510,7 +510,7 @@ mod round_two_uniqueness_tests {
         let share=valid_share(&binding);
         let sender_key=NativeChannelKey::generate();
         let receiver_key=NativeChannelKey::generate();
-        let members=&binding.spec.participants;
+        let members=binding.spec.participants.clone();
         let frame=frost::Frame {
             proposal_action:binding.proposal_action.clone(),
             operation_id:binding.spec.session_id,
