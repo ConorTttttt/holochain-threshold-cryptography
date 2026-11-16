@@ -77,7 +77,7 @@ mod cli {
                 Flags::parse(rest, &[])?;
                 let custody = Custody::load(&dir).map_err(|e| e.to_string())?;
                 let found = custody.inspect().map_err(|e| e.to_string())?;
-                println!("PASS: local layout {:?}, key source {:?}; NOT PRODUCTION VERIFIED", custody.config().layout, custody.config().master_key);
+                println!("PASS: layout {:?}, key source {:?}; NOT PRODUCTION VERIFIED", custody.config().layout, custody.config().master_key);
                 println!("journal_seq={} anchor_seq={} anchor_records={} skipped_anchor_lines={} bound={}",
                     found.head.seq, found.anchor.last.seq, found.anchor.records, found.anchor.skipped_lines,
                     found.head.anchor_id.is_some());
