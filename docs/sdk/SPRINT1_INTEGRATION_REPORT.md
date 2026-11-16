@@ -76,7 +76,15 @@ These are verified **source-presence and control-flow observations only**. Dynam
 | command -v git | 0 | /usr/bin/git | Git present |
 | git ls-remote https://github.com/ConorTttttt/holochain-threshold-cryptography.git refs/heads/feature/v0.4.0-stage2c | 128 | fatal: unable to access ... Could not resolve host: github.com | Local clone NOT AVAILABLE |
 
-PyYAML 6.0.3 is installed. The upstream PR #4 description reports an earlier 4/4 Python workflow-policy test pass on GitHub-blob-equivalent local files, but that is **upstream author evidence**, not an independent Rust test or an integrated-build pass. Its reported Actions run 43771483501 failed with no assigned runner or job steps; do not count it as Rust execution.
+PyYAML 6.0.3 is installed. **Independent Python CI-policy verification PASS (4/4; exit 0)** on a local checkout surrogate at /tmp/sprint1_ci_verify, containing exact GitHub-blob-equivalent copies of the integrated files only:
+- .github/workflows/ci.yml: local git hash-object = 1cbaca6f94b9f2af0ec28f60b813a0adf33e14bf (matches GitHub blob).
+- scripts/tests/test_ci_workflow.py: local git hash-object = 4c0b9806922c2a84cb6690552c3c669e9f838b5c (matches GitHub blob).
+- Executed: cd /tmp/sprint1_ci_verify && python3 -m unittest discover -s scripts/tests -p test_ci_workflow.py -v
+- Exit: **0**; observed 4 tests run in 0.019s, all ok, output ends with OK.
+- Cases: test_all_shell_steps_have_valid_bash_syntax; test_expected_event_and_job_split; test_no_automatic_artifact_approval_or_deployment; test_sdk_absence_is_not_mislabeled_a_pass.
+- The successful checks validate only the workflow Python/YAML policy and shell syntax: **not** a Rust compiler, Nix runner, GitHub Actions execution, or an integrated build.
+
+The upstream PR #4 also reports an earlier independent author run. Its reported Actions run 43771483501 failed with no assigned runner or job steps; do not count it as Rust execution.
 
 ## 5. Required test-evidence matrix
 
@@ -84,6 +92,7 @@ No compiler, Nix, or Holochain runner exists locally. **NOT RUN is not PASS**, a
 
 | Test group / exact command | Current status | Release condition |
 | --- | --- | --- |
+| python3 -m unittest discover -s scripts/tests -p test_ci_workflow.py -v | **PASS: 4/4, exit 0** | Exact source SHA verified; CI workflow policy/syntax only (local two-file fixture) |
 | cargo test --locked -p holochain-dkg-sdk --all-targets | **NOT RUN** | SDK default build/tests required |
 | cargo test --locked -p holochain-dkg-sdk --features native-holochain --all-targets | **NOT RUN** | Real native dependencies and read backend compile required |
 | cargo check --locked --workspace --all-targets | **NOT RUN** | Combined workspace check required |
