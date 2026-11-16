@@ -482,3 +482,291 @@ fn forged_share_attribution_cross_operation_replay_and_peer_commitments_fail() -
     }
     Ok(())
 }
+
+
+// ---- Sprint 1.7 / Agent 20: Fable F-8 (A28) storage-failure regression ----
+// All identities, shares and storage keys below are disposable native-test data.
+// SQLite triggers fail *real* transactions before publication; no production
+// fault injection API, persistence-format change or nonce recovery is needed.
+
+use holochain_mpc_runtime::{MasterKey, RuntimeStore, RuntimeError};
+use holochain_mpc_security::activation::{
+    ActivatedGroup, ApprovedIntent, GroupActivation, GroupDescriptor,
+    IntentApprovals, SigningIntent, SigningProfile,
+};
+use provider::ControlledSigner;
+
+struct SigningStorageFaultFixture {
+    binding: Binding,
+    members: Vec<Vec<u8>>,
+    keys: BTreeMap<Identifier, provider::KeyPackage>,
+    public: provider::PublicKeyPackage,
+    active: ActivatedGroup,
+}
+impl SigningStorageFaultFixture {
+    fn new() -> PResult<Self> {
+        let (binding, members, keys, public, transcript_hash) = generate()?;
+        let descriptor = GroupDescriptor {
+            proposal_action: binding.proposal_action.clone(),
+            spec: binding.spec.clone(),
+            epoch: 0,
+            dkg_transcript_hash: transcript_hash,
+            public_key_package_hash: commitment(
+                "frost-public-key-package-v1", &serde_json::to_vec(&public)?),
+            group_verifying_key: public.verifying_key().serialize()?,
+            encryption_key_binding_actions: vec![vec![11;39], vec![12;39], vec![13;39]],
+        };
+        let mut votes = GroupActivation::new(descriptor.clone())?;
+        for member in &members {
+            votes.attest(member, descriptor.digest()?)?;
+        }
+        Ok(Self { binding, members, keys, public, active: votes.finalize()? })
+    }
+
+    fn signer(&mut self, index: usize) -> PResult<ControlledSigner> {
+        let member = &self.members[index];
+        let id = self.binding.id_of(member)?;
+        let key = self.keys.remove(&id).ok_or("missing disposable share")?;
+        Ok(ControlledSigner::new(self.binding.clone(), member, key,
+                                 &self.public, self.active.clone())?)
+    }
+
+    fn approved(&self, operation: [u8;32], message: &[u8]) -> PResult<ApprovedIntent> {
+        let intent = SigningIntent::new(
+            &self.active, operation, message, self.members[..2].to_vec(),
+            SigningProfile::ContextBoundV1)?;
+        let mut votes = IntentApprovals::new(intent.clone());
+        for signer in &self.members[..2] {
+            votes.approve(signer, intent.digest()?)?;
+        }
+        Ok(votes.finalize()?)
+    }
+
+    fn sql(&self, db: &mut RuntimeStore, sequence: u64, statement: &str) -> PResult<()> {
+        // apply_received allows a database-only test side effect within a
+        // real SQLite transaction, avoiding public test-only RuntimeStore APIs.
+        let envelope = holochain_mpc_core::Envelope::new(
+            &self.binding.spec, self.members[2].clone(),
+            Some(self.members[0].clone()), 1, sequence,
+            format!("agent20-sql-fault-{sequence}").into_bytes())?;
+        db.apply_received(
+            &self.binding.proposal_action, &self.binding.spec,
+            &self.members[0], &self.members[2], &envelope,
+            |tx| { tx.execute_batch(statement)?; Ok(()) },
+        )?;
+        Ok(())
+    }
+
+    fn nonce_state(&self, db: &mut RuntimeStore, sequence: u64,
+                   operation: [u8;32]) -> PResult<Option<String>> {
+        let operation_hex: String = operation.iter().map(|byte| format!("{byte:02x}")).collect();
+        let statement = format!(
+            "SELECT state FROM nonces WHERE operation=X'{operation_hex}'");
+        let mut observed = None;
+        let envelope = holochain_mpc_core::Envelope::new(
+            &self.binding.spec, self.members[2].clone(),
+            Some(self.members[0].clone()), 1, sequence,
+            format!("agent20-nonce-state-{sequence}").into_bytes())?;
+        db.apply_received(
+            &self.binding.proposal_action, &self.binding.spec,
+            &self.members[0], &self.members[2], &envelope,
+            |tx| {
+                let mut query = tx.prepare(&statement)?;
+                let mut rows = query.query([])?;
+                if let Some(row) = rows.next()? {
+                    observed = Some(row.get(0)?);
+                }
+                Ok(())
+            },
+        )?;
+        Ok(observed)
+    }
+}
+
+const F8_MESSAGE: &[u8] = b"agent20 disposable operator-approved intent";
+const FAIL_AUTH_SQL: &str = "CREATE TRIGGER agent20_fail_auth
+    BEFORE UPDATE OF state ON nonces WHEN NEW.state='published'
+    BEGIN SELECT RAISE(ABORT, 'agent20 injected authorization write failure'); END";
+
+struct FailedAuthorization {
+    fixture: SigningStorageFaultFixture,
+    signer: ControlledSigner,
+    store: RuntimeStore,
+    _dir: tempfile::TempDir,
+    original: [u8;32],
+    approved: ApprovedIntent,
+}
+fn failed_authorization() -> PResult<FailedAuthorization> {
+    let mut fixture = SigningStorageFaultFixture::new()?;
+    let signer = fixture.signer(0)?;
+    let dir = tempfile::tempdir()?;
+    let mut store = RuntimeStore::open(
+        &dir.path().join("first.sqlite"), MasterKey::from_bytes([31;32]))?;
+    let original = commitment("agent20-f8-operation", b"original");
+    let approved = fixture.approved(original, F8_MESSAGE)?;
+    store.start_deadline(&fixture.binding.proposal_action, &original, 10_000)?;
+    fixture.sql(&mut store, 100, FAIL_AUTH_SQL)?;
+    let mut case = FailedAuthorization {
+        fixture, signer, store, _dir: dir, original, approved,
+    };
+    // If this returned commitments the security invariant would already fail.
+    assert!(matches!(
+        case.signer.prepare(&mut case.store, &case.approved, F8_MESSAGE, 100),
+        Err(ProviderError::Wire(_))
+    ), "SQLite UPDATE failure must never publish public commitments");
+    assert_eq!(case.fixture.nonce_state(&mut case.store, 101, original)?,
+               Some("reserved".into()));
+    Ok(case)
+}
+
+#[test]
+fn authorize_commitment_failure_does_not_publish() -> PResult<()> {
+    let mut case = failed_authorization()?;
+    let bogus = provider::SigningPackage::new(BTreeMap::new(), b"no approved package");
+    assert!(matches!(
+        case.signer.sign(&mut case.store, &case.approved, F8_MESSAGE, &bogus, 100),
+        Err(ProviderError::SigningNonceUnavailable)
+    ), "no authorization record means no signing authority");
+    assert_eq!(case.fixture.nonce_state(&mut case.store, 102, case.original)?,
+               Some("reserved".into()));
+    Ok(())
+}
+
+#[test]
+fn storage_failure_burns_original_operation() -> PResult<()> {
+    let mut case = failed_authorization()?;
+    case.fixture.sql(&mut case.store, 103, "DROP TRIGGER agent20_fail_auth")?;
+    assert!(matches!(
+        case.store.reserve_nonce(&case.fixture.binding.proposal_action, 0,
+                                 &case.original, &case.fixture.members[0], 100),
+        Err(RuntimeError::Conflict(_))
+    ), "a reserved slot must remain unusable after SQLite recovers");
+    assert!(case.signer.prepare(&mut case.store, &case.approved, F8_MESSAGE, 100).is_err());
+    Ok(())
+}
+
+#[test]
+fn failed_prepare_never_reuses_nonce() -> PResult<()> {
+    let mut case = failed_authorization()?;
+    case.fixture.sql(&mut case.store, 104, "DROP TRIGGER agent20_fail_auth")?;
+    let next = commitment("agent20-f8-operation", b"new-disposable-intent");
+    let approved = case.fixture.approved(next, F8_MESSAGE)?;
+    case.store.start_deadline(&case.fixture.binding.proposal_action, &next, 10_000)?;
+    // A leftover pending nonce would cause Signer::commit to return WrongState.
+    let _fresh = case.signer.prepare(&mut case.store, &approved, F8_MESSAGE, 101)?;
+    assert_eq!(case.fixture.nonce_state(&mut case.store, 105, case.original)?,
+               Some("reserved".into()));
+    assert_eq!(case.fixture.nonce_state(&mut case.store, 106, next)?,
+               Some("published".into()));
+    assert!(case.signer.prepare(&mut case.store, &case.approved, F8_MESSAGE, 102).is_err());
+    Ok(())
+}
+
+#[test]
+fn failed_prepare_restart_is_fail_closed() -> PResult<()> {
+    let mut fixture = SigningStorageFaultFixture::new()?;
+    let original = commitment("agent20-f8-operation", b"restart-original");
+    let approved = fixture.approved(original, F8_MESSAGE)?;
+    let key = fixture.keys.remove(&fixture.binding.id_of(&fixture.members[0])?)
+        .ok_or("missing disposable share")?;
+    // This clone is solely for simulating an independently started test signer.
+    let restart_key = key.clone();
+    let mut signer = ControlledSigner::new(
+        fixture.binding.clone(), &fixture.members[0], key,
+        &fixture.public, fixture.active.clone())?;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("restart.sqlite");
+    {
+        let mut db = RuntimeStore::open(&path, MasterKey::from_bytes([31;32]))?;
+        db.start_deadline(&fixture.binding.proposal_action, &original, 10_000)?;
+        fixture.sql(&mut db, 120, FAIL_AUTH_SQL)?;
+        assert!(signer.prepare(&mut db, &approved, F8_MESSAGE, 100).is_err());
+    }
+    drop(signer);
+    let mut reopened = RuntimeStore::open(&path, MasterKey::from_bytes([31;32]))?;
+    let mut restarted = ControlledSigner::new(
+        fixture.binding.clone(), &fixture.members[0], restart_key,
+        &fixture.public, fixture.active.clone())?;
+    // Even a new process with the same long-term share cannot resurrect the
+    // original operation or its destroyed ephemeral FROST nonce.
+    assert!(matches!(
+        restarted.prepare(&mut reopened, &approved, F8_MESSAGE, 100),
+        Err(ProviderError::Wire(_))
+    ));
+    assert_eq!(fixture.nonce_state(&mut reopened, 121, original)?,
+               Some("reserved".into()));
+    // Recovery after a real SQLite reopen is a *new* operation with its own
+    // unanimous activation and independently approved exact signing intent.
+    fixture.sql(&mut reopened, 122, "DROP TRIGGER agent20_fail_auth")?;
+    let next = commitment("agent20-f8-operation", b"fresh-after-restart");
+    let next_approved = fixture.approved(next, F8_MESSAGE)?;
+    reopened.start_deadline(&fixture.binding.proposal_action, &next, 10_000)?;
+    let _new_commitment = restarted.prepare(&mut reopened, &next_approved, F8_MESSAGE, 102)?;
+    assert_eq!(fixture.nonce_state(&mut reopened, 123, next)?,
+               Some("published".into()));
+    Ok(())
+}
+
+#[test]
+fn subsequent_new_operation_has_defined_recovery() -> PResult<()> {
+    let mut case = failed_authorization()?;
+    case.fixture.sql(&mut case.store, 130, "DROP TRIGGER agent20_fail_auth")?;
+    let next = commitment("agent20-f8-operation", b"independently-approved-recovery");
+    let approved = case.fixture.approved(next, F8_MESSAGE)?;
+    case.store.start_deadline(&case.fixture.binding.proposal_action, &next, 10_000)?;
+    let first = case.signer.prepare(&mut case.store, &approved, F8_MESSAGE, 101)?;
+    let mut peer = case.fixture.signer(1)?;
+    let mut peer_db = RuntimeStore::open(
+        &case._dir.path().join("peer.sqlite"), MasterKey::from_bytes([32;32]))?;
+    peer_db.start_deadline(&case.fixture.binding.proposal_action, &next, 10_000)?;
+    let second = peer.prepare(&mut peer_db, &approved, F8_MESSAGE, 101)?;
+    let mut commitments = BTreeMap::new();
+    commitments.insert(case.fixture.binding.id_of(&case.fixture.members[0])?, first);
+    commitments.insert(case.fixture.binding.id_of(&case.fixture.members[1])?, second);
+    let package = signing_package(&case.fixture.binding, next, F8_MESSAGE, commitments)?;
+    let mut shares = BTreeMap::new();
+    shares.insert(case.fixture.binding.id_of(&case.fixture.members[0])?,
+        case.signer.sign(&mut case.store, &approved, F8_MESSAGE, &package, 102)?);
+    shares.insert(case.fixture.binding.id_of(&case.fixture.members[1])?,
+        peer.sign(&mut peer_db, &approved, F8_MESSAGE, &package, 102)?);
+    let artifact = aggregate(&case.fixture.binding, next, F8_MESSAGE,
+                             &package, &shares, &case.fixture.public)?;
+    provider::verify_activated_artifact(
+        &case.fixture.binding, F8_MESSAGE, &artifact, &case.fixture.active)?;
+    assert!(case.signer.prepare(&mut case.store, &case.approved, F8_MESSAGE, 103).is_err());
+    Ok(())
+}
+
+#[test]
+fn commitment_failure_preserves_activation_requirements() -> PResult<()> {
+    let case = failed_authorization()?;
+    // No storage-recovery code may replace the all-N activation requirement.
+    let descriptor = case.fixture.active.descriptor().clone();
+    let mut incomplete = GroupActivation::new(descriptor.clone())?;
+    for member in &case.fixture.members[..2] {
+        incomplete.attest(member, descriptor.digest()?)?;
+    }
+    assert!(incomplete.finalize().is_err());
+    let mut inconsistent = GroupActivation::new(descriptor.clone())?;
+    assert!(inconsistent.attest(&case.fixture.members[0], [9;32]).is_err());
+    Ok(())
+}
+
+#[test]
+fn commitment_failure_preserves_approved_intent() -> PResult<()> {
+    let mut case = failed_authorization()?;
+    case.fixture.sql(&mut case.store, 140, "DROP TRIGGER agent20_fail_auth")?;
+    let new_op = commitment("agent20-f8-operation", b"intent-protection");
+    let good = case.fixture.approved(new_op, F8_MESSAGE)?;
+    let mut partial = IntentApprovals::new(good.intent().clone());
+    partial.approve(&case.fixture.members[0], good.digest())?;
+    assert!(partial.finalize().is_err(), "both selected signers must approve");
+    case.store.start_deadline(&case.fixture.binding.proposal_action, &new_op, 10_000)?;
+    assert!(case.signer.prepare(&mut case.store, &good, b"modified message", 100).is_err());
+    assert_eq!(case.fixture.nonce_state(&mut case.store, 141, new_op)?, None,
+               "changed content must be rejected before reserving a nonce");
+    let _valid = case.signer.prepare(&mut case.store, &good, F8_MESSAGE, 101)?;
+    assert_eq!(case.fixture.nonce_state(&mut case.store, 142, new_op)?,
+               Some("published".into()));
+    Ok(())
+}

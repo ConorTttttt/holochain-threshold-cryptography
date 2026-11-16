@@ -597,12 +597,31 @@ impl ControlledSigner {
         let intent = approved.intent();
         store.reserve_nonce(&intent.proposal_action,intent.group_epoch,
                             &intent.operation_id,&self.own_agent,now_ms)?;
-        let commitments = self.underlying.commit(intent.operation_id,message)?;
-        let serialized = serde_json::to_vec(&commitments)?;
-        store.authorize_commitment(&intent.proposal_action,intent.group_epoch,
-                                   &intent.operation_id,&self.own_agent,&serialized)?;
-        self.pending_approval = Some(approved.digest());
-        Ok(commitments)
+        // A storage/serialization error after round1::commit may leave a
+        // private FROST nonce in Signer.pending. It MUST be destroyed, never
+        // restored or used by another operation. The SQLite slot remains
+        // reserved (or, on an ambiguous post-commit error, published), so the
+        // failed operation cannot be prepared again. This also lets a newly
+        // and independently approved operation use a fresh nonce.
+        let result = (|| {
+            let commitments = self.underlying.commit(intent.operation_id,message)?;
+            let serialized = serde_json::to_vec(&commitments)?;
+            store.authorize_commitment(&intent.proposal_action,intent.group_epoch,
+                                       &intent.operation_id,&self.own_agent,&serialized)?;
+            Ok::<_, ProviderError>(commitments)
+        })();
+        match result {
+            Ok(commitments) => {
+                self.pending_approval = Some(approved.digest());
+                Ok(commitments)
+            }
+            Err(err) => {
+                // Dropping PendingNonce also drops its zeroizing SigningNonces.
+                // Do not revoke the reservation or retry an ambiguous write.
+                self.underlying.pending.take();
+                Err(err)
+            }
+        }
     }
     pub fn sign(&mut self, store: &mut RuntimeStore, approved: &ApprovedIntent, message: &[u8],
                 package: &SigningPackage, now_ms: i64) -> Result<SignatureShare,ProviderError> {
