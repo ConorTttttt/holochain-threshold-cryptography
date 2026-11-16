@@ -8,6 +8,8 @@
 use holochain_mpc_core::{commitment, Envelope, SessionSpec};
 use holochain_mpc_dkg_worker::conductor_bridge::KeyEvidence;
 use holochain_mpc_dkg_worker::ipc::{AuthChannel, ChannelContext, Role};
+use holochain_mpc_dkg_worker::inbox_slots::{InboxSlots, StoredVariant, WithheldSlot};
+use holochain_zome_types::prelude::ActionHash;
 use holochain_mpc_dkg_worker::relay::{LocalDkgNode, MpcTransport, Phase, RelayEngine, SendReceipt};
 use holochain_mpc_dkg_worker::{recover_completed_share, AuthenticatedController, Command,
     PeerKeyBinding, Reply};
@@ -20,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
-struct Network { inbox: BTreeMap<Vec<u8>, Vec<Envelope>>, keys: Vec<KeyEvidence> }
+struct Network { inbox: BTreeMap<Vec<u8>, InboxSlots>, keys: Vec<KeyEvidence> }
 struct Transport { shared: Arc<Mutex<Network>>, local: Vec<u8> }
 impl MpcTransport for Transport {
     async fn register_key(&mut self, key: [u8;32]) -> Result<Vec<u8>,String> {
@@ -29,7 +31,7 @@ impl MpcTransport for Transport {
             author: self.local.clone(), action: action.clone(), public_key: key });
         Ok(action)
     }
-    async fn get_inbox(&mut self) -> Result<Vec<Envelope>,String> {
+    async fn get_inbox_slots(&mut self) -> Result<InboxSlots,String> {
         Ok(self.shared.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
     }
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>,String> {
@@ -37,7 +39,7 @@ impl MpcTransport for Transport {
     }
     async fn publish(&mut self, env: &Envelope) -> Result<SendReceipt,String> {
         let recipient = env.recipient.clone().ok_or("no recipient")?;
-        self.shared.lock().unwrap().inbox.entry(recipient).or_default().push(env.clone());
+        self.shared.lock().unwrap().inbox.entry(recipient).or_default().envelopes.push(env.clone());
         Ok(SendReceipt { action: vec![8; 39], already_stored: false })
     }
 }
@@ -477,7 +479,7 @@ async fn served_dkg(root: &Path, binding: &Binding) -> (Vec<PathBuf>, GroupDescr
 struct SignNet {
     activations: Vec<ActivationEvidence>,
     approvals: Vec<ApprovalEvidence>,
-    inbox: BTreeMap<Vec<u8>, Vec<Envelope>>,
+    inbox: BTreeMap<Vec<u8>, InboxSlots>,
 }
 struct SignTransport { net: Arc<Mutex<SignNet>>, local: Vec<u8> }
 impl SigningTransport for SignTransport {
@@ -487,15 +489,66 @@ impl SigningTransport for SignTransport {
     async fn approvals(&mut self) -> Result<Vec<ApprovalEvidence>, String> {
         Ok(self.net.lock().unwrap().approvals.clone())
     }
-    async fn inbox(&mut self) -> Result<Vec<Envelope>, String> {
+    async fn inbox_slots(&mut self) -> Result<InboxSlots, String> {
         Ok(self.net.lock().unwrap().inbox.get(&self.local).cloned().unwrap_or_default())
     }
     async fn publish(&mut self, env: &Envelope) -> Result<(), String> {
         let recipient = env.recipient.clone().ok_or("no recipient")?;
-        self.net.lock().unwrap().inbox.entry(recipient).or_default().push(env.clone());
+        self.net.lock().unwrap().inbox.entry(recipient).or_default().envelopes.push(env.clone());
         Ok(())
     }
     async fn publish_result(&mut self, _: &SignedArtifact) -> Result<(), String> { Ok(()) }
+}
+
+// A structured inbox fixture must preserve coordinator evidence even when
+// the currently served envelope list is empty: neither native transport may
+// silently turn a conflict or quota withholding into an uncontested snapshot.
+#[tokio::test]
+async fn transport_fixtures_preserve_conflict_and_quota_evidence() {
+    let recipient = vec![1; 39];
+    let sender = vec![2; 39];
+    let payload = b"original".to_vec();
+    let first = Envelope {
+        wire_version: 1, session_id: [7; 32],
+        protocol_id: frost::PROTOCOL_ID.into(),
+        protocol_version: frost::PROTOCOL_VERSION,
+        sender: sender.clone(), recipient: Some(recipient.clone()),
+        round: 1, sequence: 1,
+        payload_hash: commitment("envelope-payload", &payload), payload,
+    };
+    let mut changed = first.clone();
+    changed.payload = b"conflicting".to_vec();
+    changed.payload_hash = commitment("envelope-payload", &changed.payload);
+    let mut quota = first.clone();
+    quota.sequence = 2;
+    let variant = |envelope: Envelope, action: u8| StoredVariant {
+        envelope, storage_actions: vec![ActionHash::from_raw_32(vec![action; 32])],
+    };
+    let snapshot = InboxSlots {
+        envelopes: vec![],
+        conflicts: vec![WithheldSlot {
+            sender: sender.clone(), round: 1, sequence: 1,
+            variants: vec![variant(first, 10), variant(changed, 11)],
+        }],
+        over_quota: vec![WithheldSlot {
+            sender, round: 1, sequence: 2,
+            variants: vec![variant(quota, 12)],
+        }],
+    };
+    let network = Arc::new(Mutex::new(Network::default()));
+    network.lock().unwrap().inbox.insert(recipient.clone(), snapshot.clone());
+    let mut dkg = Transport { shared: network, local: recipient.clone() };
+    let dkg_slots = dkg.get_inbox_slots().await.unwrap();
+    assert!(dkg_slots.envelopes.is_empty());
+    assert_eq!(dkg_slots.conflicts[0].variants.len(), 2);
+    assert_eq!(dkg_slots.over_quota[0].variants.len(), 1);
+    let sign_net = Arc::new(Mutex::new(SignNet::default()));
+    sign_net.lock().unwrap().inbox.insert(recipient.clone(), snapshot);
+    let mut signing = SignTransport { net: sign_net, local: recipient };
+    let signing_slots = signing.inbox_slots().await.unwrap();
+    assert!(signing_slots.envelopes.is_empty());
+    assert_eq!(signing_slots.conflicts[0].variants.len(), 2);
+    assert_eq!(signing_slots.over_quota[0].variants.len(), 1);
 }
 
 fn plan(descriptor: &GroupDescriptor, op: &[u8], selected: &[u8]) -> SigningPlan {

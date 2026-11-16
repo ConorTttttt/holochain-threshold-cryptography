@@ -385,6 +385,8 @@ mod round_two_uniqueness_tests {
     use holochain_mpc_core::{commitment, SessionSpec};
     use holochain_mpc_frost_ed25519 as frost;
     use holochain_mpc_security::sealed::NativeChannelKey;
+    use crate::inbox_slots::{WithheldSlot, StoredVariant};
+    use holochain_zome_types::prelude::ActionHash;
     use std::sync::{Arc, Mutex};
 
     fn binding() -> Binding {
@@ -485,15 +487,14 @@ mod round_two_uniqueness_tests {
     }
 
     struct Inbox {
-        slots:Arc<Mutex<Vec<Envelope>>>,
+        slots:Arc<Mutex<InboxSlots>>,
     }
     impl MpcTransport for Inbox {
         async fn register_key(&mut self,_:[u8;32])->Result<Vec<u8>,String>{
             Err("registration not used".into())
         }
         async fn get_inbox_slots(&mut self)->Result<InboxSlots,String>{
-            Ok(InboxSlots {envelopes:self.slots.lock().unwrap().clone(),
-                conflicts:vec![],over_quota:vec![]})
+            Ok(self.slots.lock().unwrap().clone())
         }
         async fn get_encryption_keys(&mut self)->Result<Vec<KeyEvidence>,String>{
             Err("key lookup not used".into())
@@ -505,12 +506,12 @@ mod round_two_uniqueness_tests {
 
     type TestRelay=RelayEngine<CryptoNode,Inbox>;
 
-    fn fixture()->(TestRelay,Arc<Mutex<Vec<Envelope>>>,Envelope,Envelope) {
+    fn fixture()->(TestRelay,Arc<Mutex<InboxSlots>>,Envelope,Envelope) {
         let binding=binding();
         let share=valid_share(&binding);
         let sender_key=NativeChannelKey::generate();
         let receiver_key=NativeChannelKey::generate();
-        let members=&binding.spec.participants;
+        let members=binding.spec.participants.clone();
         let frame=frost::Frame {
             proposal_action:binding.proposal_action.clone(),
             operation_id:binding.spec.session_id,
@@ -521,7 +522,7 @@ mod round_two_uniqueness_tests {
         let second=frost::seal_dkg_round_two(&binding,&frame,
             &members[1],&members[0],2,&sender_key,receiver_key.public_key()).unwrap();
         assert_ne!(first.payload,second.payload);
-        let slots=Arc::new(Mutex::new(Vec::new()));
+        let slots=Arc::new(Mutex::new(InboxSlots::default()));
         let node=CryptoNode {
             receiver:members[0].clone(),sender:members[1].clone(),
             binding:binding.clone(),receiver_key,sender_key:sender_key.public_key(),
@@ -535,10 +536,46 @@ mod round_two_uniqueness_tests {
         (relay,slots,first,second)
     }
 
+    fn stored_variant(env:Envelope, marker:u8)->StoredVariant {
+        StoredVariant {envelope:env,
+            storage_actions:vec![ActionHash::from_raw_32(vec![marker;32])]}
+    }
+
+    #[tokio::test]
+    async fn conflicting_structured_share_slot_aborts_before_worker_decrypt() {
+        let (mut relay,inbox,first,_)=fixture();
+        let mut changed=first.clone();
+        changed.payload=b"alternative sealed packet".to_vec();
+        changed.payload_hash=commitment("envelope-payload",&changed.payload);
+        inbox.lock().unwrap().conflicts.push(WithheldSlot {
+            sender:first.sender.clone(),round:first.round,sequence:first.sequence,
+            variants:vec![stored_variant(first,10),stored_variant(changed,11)],
+        });
+        let err=relay.poll_once().await.unwrap_err();
+        assert!(err.contains("conflicting authenticated DKG inbox slot"),"{err}");
+        assert_eq!(relay.node.accepted,0);
+        assert_eq!(relay.phase(),Phase::Aborted);
+        assert!(relay.node.aborted);
+    }
+
+    #[tokio::test]
+    async fn quota_withheld_structured_share_slot_aborts_before_worker_decrypt() {
+        let (mut relay,inbox,first,_)=fixture();
+        inbox.lock().unwrap().over_quota.push(WithheldSlot {
+            sender:first.sender.clone(),round:first.round,sequence:first.sequence,
+            variants:vec![stored_variant(first,12)],
+        });
+        let err=relay.poll_once().await.unwrap_err();
+        assert!(err.contains("required DKG inbox slot withheld over sender quota"),"{err}");
+        assert_eq!(relay.node.accepted,0);
+        assert_eq!(relay.phase(),Phase::Aborted);
+        assert!(relay.node.aborted);
+    }
+
     #[tokio::test]
     async fn duplicate_round_two_in_one_poll_aborts() {
         let (mut relay,inbox,first,second)=fixture();
-        inbox.lock().unwrap().extend([first,second]);
+        inbox.lock().unwrap().envelopes.extend([first,second]);
         let err=relay.poll_once().await.unwrap_err();
         assert!(err.contains("multiple encrypted shares from one member"),"{err}");
         assert_eq!(relay.node.accepted,2,"both ciphertexts must decrypt first");
@@ -551,10 +588,10 @@ mod round_two_uniqueness_tests {
     #[tokio::test]
     async fn duplicate_round_two_across_polls_aborts() {
         let (mut relay,inbox,first,second)=fixture();
-        inbox.lock().unwrap().push(first);
+        inbox.lock().unwrap().envelopes.push(first);
         assert_eq!(relay.poll_once().await.unwrap().delivered,1);
         assert_eq!(relay.phase(),Phase::Shares);
-        inbox.lock().unwrap().push(second);
+        inbox.lock().unwrap().envelopes.push(second);
         let err=relay.poll_once().await.unwrap_err();
         assert!(err.contains("multiple encrypted shares from one member"),"{err}");
         assert_eq!(relay.node.accepted,2);
@@ -566,9 +603,9 @@ mod round_two_uniqueness_tests {
     #[tokio::test]
     async fn duplicate_round_two_reverse_order_across_polls_aborts() {
         let (mut relay,inbox,first,second)=fixture();
-        inbox.lock().unwrap().push(second);
+        inbox.lock().unwrap().envelopes.push(second);
         assert_eq!(relay.poll_once().await.unwrap().delivered,1);
-        inbox.lock().unwrap().push(first);
+        inbox.lock().unwrap().envelopes.push(first);
         let err=relay.poll_once().await.unwrap_err();
         assert!(err.contains("multiple encrypted shares from one member"),"{err}");
         assert_eq!(relay.node.accepted,2);

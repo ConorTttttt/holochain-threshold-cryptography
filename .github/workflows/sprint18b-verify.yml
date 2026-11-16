@@ -1,0 +1,80 @@
+name: Sprint 1.8B candidate verification
+
+# Experimental, disposable-only validation on the isolated PR #19 branch.
+on:
+  push:
+    branches: [sprint18b/compile-security-verification-20261116]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sprint18b-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: "4"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  native:
+    name: Workspace, native security and SDK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Fetch pinned dependencies
+        run: nix develop --no-write-lock-file --command cargo fetch --locked
+      - name: Compile all supported targets and execute native regressions
+        shell: bash
+        run: |
+          mkdir -p /tmp/dkg-sprint18b-native
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-sprint18b-native
+            git rev-parse HEAD
+            rustc --version
+            cargo --version
+            cargo check --locked --workspace --all-targets
+            cargo test --locked -p holochain-mpc-dkg-worker --test share_custody
+            cargo test --locked -p holochain-mpc-dkg-worker --lib round_two_uniqueness_tests
+            cargo test --locked -p holochain-mpc-dkg-worker --test round_two_security
+            cargo test --locked -p holochain-mpc-core
+            cargo test --locked -p holochain-mpc-security
+            cargo test --locked -p holochain-mpc-runtime
+            cargo test --locked -p holochain-mpc-frost-ed25519
+            cargo test --locked -p holochain-mpc-dkg-worker
+            cargo test --locked -p holochain-dkg-sdk --all-targets
+            cargo test --locked -p holochain-dkg-sdk --features native-holochain --all-targets
+            cargo check --locked -p holochain-mpc-dkg-worker --all-targets
+            cargo check --locked -p holochain-mpc-dkg-worker --features conductor-client --all-targets
+            cargo check --locked -p holochain-mpc-dkg-worker --features lair-signer --all-targets
+            git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+          '
+
+  conductor:
+    name: Disposable hApp build and Holochain security Sweettests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Fetch pinned dependencies
+        run: nix develop --no-write-lock-file --command cargo fetch --locked
+      - name: Build disposable hApp and run actual conductor tests
+        shell: bash
+        run: |
+          mkdir -p /tmp/dkg-sprint18b-conductor
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-sprint18b-conductor RUST_TEST_THREADS=1
+            git rev-parse HEAD
+            rustc --version
+            cargo --version
+            hc --version
+            npm run build:happ
+            npm run test:sweettest
+            cargo test --locked -p mpc --test fable_conductor_adversarial -- --nocapture --test-threads=1
+            git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+          '
