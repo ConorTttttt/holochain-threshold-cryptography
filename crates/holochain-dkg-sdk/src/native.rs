@@ -160,6 +160,34 @@ mod tests {
         assert!(validate_approved_spec(&p, &spec()).is_err());
     }
     #[test]
+    fn app_identity_and_pinned_cell_are_rejected_before_sdk_signing() {
+        use holochain_mpc_dkg_worker::connection_policy::{ObservedApp, ObservedCell};
+        let p=pin();
+        let app=ObservedApp {
+            installed_app_id: p.app_id.clone(),
+            agent: p.node.worker_agent.clone(),
+            cells: vec![ObservedCell {
+                role: p.role.clone(),
+                dna_hash: p.dna_hash.clone(),
+                agent: p.node.worker_agent.clone(),
+            }],
+        };
+        p.verify(&app).unwrap();
+        let mut bad=app.clone();bad.installed_app_id="other-app".into();
+        assert!(p.verify(&bad).is_err());
+        bad=app.clone();bad.agent=vec![2;39];
+        assert!(p.verify(&bad).is_err());
+        bad=app.clone();bad.cells[0].agent=vec![2;39];
+        assert!(p.verify(&bad).is_err());
+        bad=app.clone();bad.cells[0].dna_hash=vec![8;39];
+        assert!(p.verify(&bad).is_err());
+        bad=app.clone();bad.cells[0].role="clone".into();
+        assert!(p.verify(&bad).is_err());
+        bad=app.clone();bad.cells.push(app.cells[0].clone());
+        assert!(p.verify(&bad).is_err());
+    }
+
+    #[test]
     fn refuses_changed_app_context_roster_and_threshold_in_signed_reply() {
         assert!(validated_status(&pin(), &spec(), response(spec())).is_ok());
         let mut s=spec();s.application_id="another.app".into();
