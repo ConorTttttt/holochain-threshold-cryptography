@@ -108,3 +108,11 @@ required-features = ["lair-signer"]
 name = "transport_probe"
 path = "tests/transport_probe.rs"
 required-features = ["lair-signer"]
+
+# Interactive, test-only live writes require the full optional Lair and
+# conductor client stack. Default --all-targets checks must not compile this
+# privileged example without its required features.
+[[example]]
+name = "phase5c_live_writes"
+path = "examples/phase5c_live_writes.rs"
+required-features = ["lair-signer"]
