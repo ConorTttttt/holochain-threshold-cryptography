@@ -534,3 +534,46 @@ fn authorize_commitment_after_commit_before_ack_is_ambiguous_and_burned() -> T {
         &proposal, 0, &operation, &signer, b"a different commitment").is_err());
     Ok(())
 }
+
+
+#[test]
+fn custody_log_failure_rolls_back_nonce_reserve_and_publication() -> T {
+    let dir = tempdir()?;
+    let path = dir.path().join("custody-log-fault.sqlite");
+    let (proposal, signer, operation) = ([7;39], [1;39], [43;32]);
+    let mut db = store(&path)?;
+    db.start_deadline(&proposal, &operation, 5000)?;
+    let injection = rusqlite::Connection::open(&path)?;
+    injection.execute_batch(
+        "CREATE TRIGGER agent20_log_fault BEFORE INSERT ON custody_log
+         WHEN NEW.label = 'reserve-nonce'
+         BEGIN SELECT RAISE(ABORT, 'agent20 reserve chain failure'); END;")?;
+    assert!(matches!(
+        db.reserve_nonce(&proposal, 0, &operation, &signer, 100),
+        Err(RuntimeError::Sql(_))
+    ));
+    let count: i64 = injection.query_row("SELECT COUNT(*) FROM nonces", [], |r| r.get(0))?;
+    assert_eq!(count, 0, "reservation and custody-chain event must be atomic");
+    injection.execute_batch("DROP TRIGGER agent20_log_fault;")?;
+    db.reserve_nonce(&proposal, 0, &operation, &signer, 101)?;
+    injection.execute_batch(
+        "CREATE TRIGGER agent20_log_fault BEFORE INSERT ON custody_log
+         WHEN NEW.label = 'publish-commitment'
+         BEGIN SELECT RAISE(ABORT, 'agent20 publish chain failure'); END;")?;
+    assert!(matches!(
+        db.authorize_commitment(&proposal, 0, &operation, &signer, b"test commitment"),
+        Err(RuntimeError::Sql(_))
+    ));
+    let state: String = injection.query_row(
+        "SELECT state FROM nonces WHERE proposal=?1 AND operation=?2 AND signer=?3",
+        params![proposal.as_slice(), operation.as_slice(), signer.as_slice()],
+        |r| r.get(0))?;
+    assert_eq!(state, "reserved", "publish UPDATE must roll back with its custody event");
+    injection.execute_batch("DROP TRIGGER agent20_log_fault;")?;
+    db.authorize_commitment(&proposal, 0, &operation, &signer, b"test commitment")?;
+    assert!(matches!(
+        db.reserve_nonce(&proposal, 0, &operation, &signer, 102),
+        Err(RuntimeError::Conflict(_))
+    ));
+    Ok(())
+}
