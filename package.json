@@ -6,7 +6,7 @@
     "build:zomes": "RUSTFLAGS='--cfg getrandom_backend=\"custom\" -C link-arg=--allow-undefined' cargo build --release --target wasm32-unknown-unknown -p mpc_integrity -p mpc",
     "build:happ": "npm run build:zomes && hc app pack workdir --recursive",
     "test:core": "cargo test -p holochain-mpc-core",
-    "test:sweettest": "npm run build:happ && cargo test -p mpc --test mpc_network -- --nocapture && cargo test -p mpc --test dkg_live -- --nocapture && cargo test -p mpc --test inbox_hardening -- --nocapture --test-threads=1 && cargo test -p holochain-mpc-dkg-worker --test three_processes -- --nocapture && cargo test -p holochain-mpc-dkg-worker --test conductor_bridge -- --nocapture",
+    "test:sweettest": "npm run build:happ && cargo test -p mpc --test mpc_network -- --nocapture && cargo test -p mpc --test dkg_live -- --nocapture && cargo test -p mpc --test inbox_hardening -- --nocapture --test-threads=1 && cargo test -p mpc --test fable_conductor_adversarial -- --nocapture --test-threads=1 && cargo test -p holochain-mpc-dkg-worker --test three_processes -- --nocapture && cargo test -p holochain-mpc-dkg-worker --test conductor_bridge -- --nocapture",
     "test": "npm run test:native && npm run test:sweettest",
     "test:coordinator-unit": "cargo test -p mpc --lib",
     "test:inbox-hardening": "npm run build:happ && cargo test -p mpc --lib && cargo test -p mpc --test inbox_hardening -- --nocapture --test-threads=1",
@@ -61,6 +61,7 @@
     "build:phase5c-provision": "cargo build -p holochain-mpc-dkg-worker --features lair-signer --bin mpc-phase5c-provision",
     "test:signer-phase5b-static": "npm run test:lair-live-probe-policy && npm run build:lair-live-probe",
     "test:transport-probe": "cargo test --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --test transport_probe --bin mpc-transport-probe",
-    "build:transport-probe": "cargo build --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --bin mpc-transport-probe"
+    "build:transport-probe": "cargo build --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --bin mpc-transport-probe",
+    "test:fable-conductors": "npm run build:happ && cargo test -p mpc --test fable_conductor_adversarial -- --nocapture --test-threads=1"
   }
 }
