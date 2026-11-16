@@ -592,3 +592,188 @@ async fn one_locally_completed_share_is_never_implicitly_activated_for_signing()
     assert!(observed.inbox.is_empty(), "unactivated share must emit no signing commitments");
     assert!(observed.results.is_empty(), "unactivated share must produce no signature");
 }
+
+
+//
+// Sprint 1.7 Agent 23 — legacy signing-slot aliasing and finite proposal inbox.
+// These tests intentionally retain the v1 sequence and coordinator wire format.
+// Native transport below is simulated; no Holochain conductor runs here.
+//
+
+fn colliding_plan(f: &Fixture, op: u8, selected: &[u8]) -> (SigningPlan, SigningPlan) {
+    let first = f.plan(op, selected);
+    let mut second = first.clone();
+    second.operation_id[8] ^= 0x80;
+    assert_ne!(first.operation_id, second.operation_id);
+    assert_eq!(&first.operation_id[..8], &second.operation_id[..8]);
+    first.validate().unwrap();
+    second.validate().unwrap();
+    (first, second)
+}
+
+#[tokio::test]
+async fn distinct_operation_ids_can_collide_on_legacy_sequence() {
+    let f = fixture().await;
+    let (a, b) = colliding_plan(&f, 80, &[1, 3]);
+    assert_eq!(a.sequence(), b.sequence(),
+        "a 64-bit legacy sequence cannot injectively encode 256-bit operation IDs");
+    let active = {
+        let net = Arc::new(Mutex::new(SignNet::default()));
+        f.activate_all(&net);
+        let activations = net.lock().unwrap().activations.clone();
+        activated_group(&f.descriptor, &activations).unwrap().unwrap()
+    };
+    assert_ne!(a.intent(&active).unwrap().digest().unwrap(),
+               b.intent(&active).unwrap().digest().unwrap(),
+               "the signed intent must still bind the full operation ID");
+}
+
+#[tokio::test]
+async fn colliding_operations_never_cross_authorize() {
+    let f = fixture().await;
+    let (a, b) = colliding_plan(&f, 81, &[1, 3]);
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    f.activate_all(&net);
+    let active = activated_group(&f.descriptor, &net.lock().unwrap().activations)
+        .unwrap().unwrap();
+    f.approve(&net, &a, &[1]);
+    f.approve(&net, &a, &[3]);
+    let old = net.lock().unwrap().approvals.clone();
+    assert!(holochain_mpc_dkg_worker::signing::approved_intent(&a, &active, &old)
+        .unwrap().is_some());
+    assert!(holochain_mpc_dkg_worker::signing::approved_intent(&b, &active, &old)
+        .unwrap().is_none(), "approvals for another full operation ID grant nothing");
+    f.approve(&net, &b, &[1]);
+    assert!(holochain_mpc_dkg_worker::signing::approved_intent(
+        &b, &active, &net.lock().unwrap().approvals).unwrap().is_none());
+    f.approve(&net, &b, &[3]);
+    assert!(holochain_mpc_dkg_worker::signing::approved_intent(
+        &b, &active, &net.lock().unwrap().approvals).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn colliding_operations_cannot_cross_aggregate() {
+    let f = fixture().await;
+    let (a, b) = colliding_plan(&f, 82, &[1, 3]);
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    f.activate_all(&net);
+    for who in [1, 3] { f.approve(&net, &a, &[who]); }
+    let (mut s1, mut s3) = (store(f.dir.path(), &[1; 39]), store(f.dir.path(), &[3; 39]));
+    let mut t1 = SignTransport { net: net.clone(), local: vec![1; 39] };
+    let mut t3 = SignTransport { net: net.clone(), local: vec![3; 39] };
+    let (r1, r3) = tokio::join!(
+        run_signing(&mut t1, &mut s1, f.custody(&[1; 39]), &[1; 39], a.clone(), poll()),
+        run_signing(&mut t3, &mut s3, f.custody(&[3; 39]), &[3; 39], a.clone(), poll())
+    );
+    let artifact = r1.unwrap();
+    assert_eq!(r3.unwrap(), artifact);
+    frost::verify_artifact(&f.binding, &a.message, &artifact,
+        &f.descriptor.group_verifying_key).unwrap();
+    assert_ne!(artifact.operation_id, b.operation_id);
+    assert_eq!(a.sequence(), b.sequence());
+
+    // The old completed operation's authentic signing frames remain in the
+    // cumulative inbox. Even if the new request is separately approved,
+    // these cannot be interpreted as authorisation, shares or an aggregate
+    // for B. A real coordinator additionally withholds conflicting slots.
+    for who in [1, 3] { f.approve(&net, &b, &[who]); }
+    let (mut s1b, mut s3b) = (store(f.dir.path(), &[1; 39]), store(f.dir.path(), &[3; 39]));
+    let mut t1b = SignTransport { net: net.clone(), local: vec![1; 39] };
+    let mut t3b = SignTransport { net: net.clone(), local: vec![3; 39] };
+    let (e1, e3) = tokio::join!(
+        run_signing(&mut t1b, &mut s1b, f.custody(&[1; 39]), &[1; 39], b.clone(), poll()),
+        run_signing(&mut t3b, &mut s3b, f.custody(&[3; 39]), &[3; 39], b.clone(), poll())
+    );
+    for result in [e1, e3] {
+        let error = result.expect_err("cross-operation frames must never aggregate");
+        assert!(error.contains("another operation in this slot"), "{error}");
+    }
+    assert_eq!(net.lock().unwrap().results.len(), 2,
+        "the only published artifacts belong to the first operation");
+}
+
+fn inbox_quota_envelope(sender: u8, recipient: u8, sequence: u64) -> Envelope {
+    let spec = binding().spec;
+    Envelope::new(&spec, vec![sender; 39], Some(vec![recipient; 39]),
+        4, sequence, b"synthetic-quota-record".to_vec()).unwrap()
+}
+
+fn inbox_quota_action(index: u64) -> ActionHash {
+    let mut bytes = vec![0_u8; 32];
+    bytes[..8].copy_from_slice(&index.to_be_bytes());
+    bytes[31] = 1;
+    ActionHash::from_raw_32(bytes)
+}
+
+#[test]
+fn per_sender_quota_is_isolated() {
+    let quota = mpc::sender_quota(&binding().spec);
+    assert_eq!(quota, 2048);
+    let mut records = Vec::new();
+    for n in 1..=quota as u64 + 1 {
+        records.push((inbox_quota_action(n), inbox_quota_envelope(1, 2, n)));
+    }
+    records.push((inbox_quota_action(quota as u64 + 2),
+        inbox_quota_envelope(3, 2, 1)));
+    let slots = mpc::partition_inbox(records, quota);
+    assert_eq!(slots.envelopes.len(), quota + 1,
+        "sender 3's independent slot remains served");
+    assert_eq!(slots.over_quota.len(), 1);
+    assert_eq!(slots.over_quota[0].sender, vec![1; 39]);
+    assert_eq!(slots.over_quota[0].sequence, quota as u64 + 1);
+    assert!(slots.envelopes.iter().any(|e| e.sender == vec![3; 39]));
+    assert!(slots.conflicts.is_empty());
+}
+
+#[test]
+fn honest_sender_quota_exhaustion_is_detected() {
+    let quota = mpc::sender_quota(&binding().spec);
+    let records = (1..=quota as u64 + 1).map(|n|
+        (inbox_quota_action(n), inbox_quota_envelope(1, 2, n))
+    ).collect::<Vec<_>>();
+    let slots = mpc::partition_inbox(records, quota);
+    assert_eq!(slots.envelopes.len(), quota);
+    assert_eq!(slots.over_quota.len(), 1,
+        "relaxed racing writes above quota must be withheld on read");
+    assert_eq!(slots.over_quota[0].sequence, quota as u64 + 1);
+    // A non-racing receive would return InboxFailure::SenderQuota instead.
+    // This is a detection test, not an SDK preflight-expiry implementation.
+}
+
+#[tokio::test]
+async fn group_renewal_uses_fresh_proposal() {
+    let f = fixture().await;
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    f.activate_all(&net);
+    let old_evidence = net.lock().unwrap().activations.clone();
+    assert!(activated_group(&f.descriptor, &old_evidence).unwrap().is_some());
+    let mut next = f.descriptor.clone();
+    next.proposal_action = vec![0xed; 39];
+    next.epoch += 1;
+    next.dkg_transcript_hash = commitment("fresh-proposal-test", b"new transcript");
+    next.public_key_package_hash = commitment("fresh-proposal-test", b"new public package");
+    assert_ne!(f.descriptor.digest().unwrap(), next.digest().unwrap());
+    // Fabricated descriptor/votes exercise only group binding, not a real DKG.
+    assert!(activated_group(&next, &old_evidence).is_err()
+        || activated_group(&next, &old_evidence).unwrap().is_none(),
+        "old votes cannot activate a fresh proposal");
+    let mut activation = holochain_mpc_security::activation::GroupActivation::new(next.clone()).unwrap();
+    let digest = next.digest().unwrap();
+    for member in &next.spec.participants { activation.attest(member, digest).unwrap(); }
+    assert_eq!(activation.finalize().unwrap().digest(), digest);
+}
+
+/// Known-red lifecycle acceptance test. The current API takes only descriptor
+/// and attestations; it has no group-expired/remaining-capacity input.
+/// Unignore only after a reviewed, durable group-expiration gate is integrated.
+#[tokio::test]
+#[ignore = "S1-M03 OPEN: exhausted group has no durable expiry/rekey admission gate"]
+async fn old_exhausted_group_is_not_silently_reactivated() {
+    let f = fixture().await;
+    let net = Arc::new(Mutex::new(SignNet::default()));
+    f.activate_all(&net);
+    let votes = net.lock().unwrap().activations.clone();
+    let _consumed_sender_budget = mpc::sender_quota(&f.binding.spec);
+    assert!(activated_group(&f.descriptor, &votes).unwrap().is_none(),
+        "KNOWN RED: old activation remains valid without an independent expiration gate");
+}
