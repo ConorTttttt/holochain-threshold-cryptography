@@ -1,184 +1,116 @@
-# Sprint 1 integration report — provisional ledger
+# Sprint 1 — Agent 6 integration and build-validation report
 
-**Date:** 2026-11-15 (UTC)  
-**Verdict: CHANGES REQUIRED — Blocking issues remain**  
-**Status:** preliminary integration ledger, **not a completed Sprint 1
-integration**, security attestation, deployment approval or release.
+**Date:** 2026-11-16 UTC  
+**Decision:** **CHANGES REQUIRED — DRAFT; NOT a security pass, release approval, or production deployment.**  
+**Repository:** ConorTttttt/holochain-threshold-cryptography  
+**Base branch:** feature/v0.4.0-stage2c  
+**Verified base SHA:** 122679a7239b97584c153d7ed1feecd35b914061  
+**Integration branch:** sprint1/agent6-stage2c-integration-20261116  
+**Initial integrated commit:** d5da2d37dcf2fee521c43786aab36c0f24accea0  
+**Integrated tree SHA:** e958aaf51c27d6a029950c1d8a1028c392174a5e  
+**PR status:** draft until a Rust-enabled runner proves all required gates.
 
-## Baseline and change provenance
+## 1. Exact provenance and scope
 
-- Repository: `ConorTttttt/holochain-threshold-cryptography`.
-- Correct Sprint 1 baseline: `feature/v0.4.0-stage2c` at commit
-  `122679a7239b97584c153d7ed1feecd35b914061`.
-- Default `main` remains at `8dec22361b484f79c309c10f7dbbbe26e4ab47d5`
-  and does **not** include the Stage 2C worker and release-tool baseline.
-- Agent 5 candidate branch: `agents/sprint1-ci-sdk-testing`, forked from
-  `122679a`. This is a **standalone review branch**, not an integrated merge.
-- Agent 4 opened draft PR #1, `agent4/sdk-foundation-stage2c` at
-  `eaf24e6af2f77036cf7a8d61f6f432898a7f0657`; it proposes a read-only
-  SDK facade. It intentionally does not add workspace membership, and its own
-  report says Rust tests were **NOT RUN**. The PR is **not integrated**.
-- Agent 1 opened draft PR #2 at `969ee842e8d56452c6ecaccf091424ccfa3a280c`
-  with `docs/sdk/SPRINT1_SECURITY_REVIEW.md`. This independent **source-only**
-  review reports **CHANGES REQUIRED** (8 new findings, including a High
-  custody/layout blocker). It is **not integrated** and did not run tests.
-- Agent 2 opened draft PR #3 at `eb6e33c4b1f7d3d71e0cb2d01cd33b70eff88959`
-  with a new native `get_inbox_slots` client/relay/signing implementation;
-  its PR explicitly says Rust validation is **NOT YET VERIFIED**.
-  It is **not integrated**; late-equivocation and nonce tests remain unrun.
-- Agent 3 opened draft PR #5, `sprint1/agent3-dkg-lifecycle` at
-  `ec0176c0e4dbc19459dec3ef6516e02ba6c80198`, proposing durable
-  abort-on-disconnect and F2 non-activation regressions. Its PR reports
-  **NOT RUN** for Rust tests; it is **not integrated**.
-- Agent 2 and Agent 3 change four overlapping worker paths. No
-  other-agent code has been integrated or tested together.
+The initial integration commit has **six Git parents**, in this order: the exact Stage 2C baseline and the five existing PR heads. This retains each PR's original reachable commit history (no squashing, no merging into main). Changes were assembled onto a tree based strictly on Stage 2C.
 
-## Agent 5 delivered changes
-
-| Path | Purpose |
-| --- | --- |
-| `.github/workflows/ci.yml` | PR static/native checks; push/manual ephemeral Sweettests; explicit manual release identity gate |
-| `flake.nix` | Provision PyYAML with pinned Nix Python for existing release validators |
-| `scripts/tests/test_ci_workflow.py` | Four offline regression tests for workflow event routing, Bash syntax, SDK NOT RUN and no automatic release approval |
-| `docs/sdk/TESTING.md` | Layer-by-layer command matrix, approval rules, evidence requirements |
-| `docs/sdk/DEVELOPMENT.md` | Reproducible developer entry points, SDK expectations and custody boundaries |
-| `docs/sdk/SPRINT1_INTEGRATION_REPORT.md` | This honest integration ledger |
-
-The workflow does not set or use persistent Lair credentials, deploy cells,
-re-record hashes, or modify release inventories. It does not replace the
-existing `scripts/check_release.py` and `scripts/release_check.py` safety checks.
-
-## Agent integration status
-
-| Agent | Evidence / code available | Integration result |
-| --- | --- | --- |
-| 1 — Independent security reviewer | Draft PR #2 reports eight independent source-level findings: 1 High, 4 Medium, 3 Low | **REVIEW RECEIVED, NOT MERGED**; CHANGES REQUIRED; dynamic tests NOT RUN |
-| 2 — Coordinator/native inbox consumer | Draft PR #3 contains 13 changed worker/test/doc paths | **NOT INTEGRATED**; native test execution NOT RUN |
-| 3 — DKG lifecycle and crash safety | Draft PR #5 proposes durable F1 abort and F2 partial-activation tests | **NOT INTEGRATED**; authored tests NOT RUN; F1/F2 not closed |
-| 4 — Public Rust SDK | Draft PR #1 offers read-only SDK files; workspace membership omitted | **NOT INTEGRATED**; SDK tests NOT RUN; live FROST status permission blocked |
-| 5 — CI / developer experience | CI config and docs proposed on Agent 5 branch | **PROPOSED, NOT CI-VALIDATED** |
-| 6 — Integration coordinator | Cannot complete without 1–4 and cross-branch testing | **BLOCKED** |
-
-## Cross-branch overlap inspection
-
-Draft PR #3 (Agent 2) and PR #5 (Agent 3) both modify:
-
-| Shared path | Agent 2 changes | Agent 3 changes | Integration action |
+| Contribution | PR | Original tip SHA | Status in integration |
 | --- | --- | --- | --- |
-| `crates/mpc-dkg-worker/src/lib.rs` | New inbox-slot module export | Authenticated controller terminal abort on disconnect | Reconcile API and worker lifecycle; review errors and custody state |
-| `crates/mpc-dkg-worker/src/relay.rs` | `MpcTransport::get_inbox_slots`; fail-closed DKG conflict inspection | `LocalDkgNode::abort`, relay abort/poison, transport disconnect handling | Preserve both fail-closed paths and ensure conflicting inbox cannot bypass journal abort |
-| `crates/mpc-dkg-worker/tests/relay_simulation.rs` | Structured inbox fixtures and late-equivocation regressions | Relay error/timeout/partition-abort regression | Combine mock trait implementations and rerun both classes of tests |
-| `crates/mpc-dkg-worker/tests/signing_session.rs` | Structured signing inbox fixtures and nonce-burning late-conflict tests | Controller disconnect mock plus incomplete-group signing test | Combine mocks, verify no nonce use after either abort path |
+| Rust application SDK foundation | #1 | eaf24e6af2f77036cf7a8d61f6f432898a7f0657 | Incorporated |
+| Independent security review | #2 | 969ee842e8d56452c6ecaccf091424ccfa3a280c | Incorporated as finding register; not a security sign-off |
+| Structured native inbox integration | #3 | eb6e33c4b1f7d3d71e0cb2d01cd33b70eff88959 | Incorporated |
+| Nix/CI and development test plan | #4 | 5ab8f1947b2a40d3a5cf6fec887b9bc851c0f521 | Incorporated; provisional report replaced |
+| Durable abort and partial-activation coverage | #5 | ec0176c0e4dbc19459dec3ef6516e02ba6c80198 | Incorporated |
 
-These file overlaps were verified from PR #3 and #5 GitHub patch hunks,
-not from a local merged tree. The hunks target mostly different locations,
-but compilation, trait completeness, state invariants and actual conflict-free
-integration are **NOT VERIFIED**. No automatic merge was attempted.
+Source inventory: 37 changed paths in the initial integrated tree, including root Cargo.toml, Cargo.lock, and the four overlap resolutions. Every other file changed by an upstream PR is taken directly from that PR head's Git blob. The Stage 2C baseline and PR head identities were checked against GitHub metadata; the integration branch was created from the exact baseline SHA.
 
-## Verification log
+## 2. PR #3 / PR #5 conflicts and security-sensitive resolution
 
-GitHub repository metadata, branch list, tracked paths, manifests and
-existing test/release scripts were inspected via the GitHub connection.
-That is **source inspection**, not compilation or a passing test suite.
-The environment used for this inspection does not provide `cargo`, `rustc`,
-`nix` or `hc`, and direct Git cloning has no DNS access. An exact local copy
-of the workflow was verified against the GitHub blob SHA
-`1cbaca6f94b9f2af0ec28f60b813a0adf33e14bf`; the offline workflow-policy
-test source was verified against blob SHA
-`4c0b9806922c2a84cb6690552c3c669e9f838b5c`.
+The original PR patches were interpreted against the identical baseline, and the separate edit ranges were applied to the baseline files in their original order. All hunks matched their baseline context and removals; there were **zero overlapping modified base-line ranges** in the four shared files. Both authors' insertions and replacements remain present. This is a source-level merge check, **not** a compiler or protocol-correctness pass.
 
-| Command or suite | Status | Explanation |
+| Shared path | Inbox PR #3 retained | Lifecycle PR #5 retained |
 | --- | --- | --- |
-| `python3 -m unittest discover -s scripts/tests -p test_ci_workflow.py -v` | **PASS** | Executed locally on blob-identical workflow and test source: 4 tests OK (YAML/event policy, no record/deploy, SDK NOT RUN, Bash syntax); not a runner test |
-| `cargo check --offline --locked --workspace --all-targets` | **NOT RUN** | Rust toolchain unavailable |
-| `python3 -I scripts/check_release.py` | **NOT RUN** | Full private repo not locally checked out |
-| `npm run test:release-tools` | **NOT RUN** | Full private repo not locally checked out |
-| `npm run test:native` | **NOT RUN** | Rust toolchain and source checkout unavailable |
-| `cargo test --offline --locked -p holochain-dkg-sdk --all-targets` | **NOT RUN** | SDK crate absent |
-| `npm run test:sweettest` | **NOT RUN** | Holonix / `hc` and test conductors unavailable |
-| `npm run check:release` | **NOT RUN** | Fresh source build unavailable; prior Stage 2C identity failure recorded |
-| `scripts/phase6_faults.py` and signing fault rehearsals | **NOT RUN** | Disposable multi-conductor harness not provisioned |
-| GitHub Actions PR #4 run `43771483501` (commit `bbfe2dd`) | **FAIL** | `static` and `native` jobs failed; `integration` and `release` skipped by design. Both jobs completed in about two seconds with **zero steps** and no assigned runner name in GitHub's API. Logs could not be retrieved (404); likely a pre-execution runner/provisioning problem, **not proof any test command executed**. The precise failure cause is unknown |
+| crates/mpc-dkg-worker/src/lib.rs | Unix inbox_slots module export | AuthenticatedController::abort_on_disconnect: poisoned controller + durable running-to-aborted transition |
+| crates/mpc-dkg-worker/src/relay.rs | get_inbox_slots transport interface; conflict and over-quota scan, including already-seen DKG slots | LocalDkgNode::abort, RelayEngine::abort and poison closure of worker IPC |
+| crates/mpc-dkg-worker/tests/relay_simulation.rs | Structured snapshot fixture, late DKG equivocation and selective over-quota tests | Abort-capable mock, network partition / exhausted poll budget test |
+| crates/mpc-dkg-worker/tests/signing_session.rs | Signing conflict fixtures, selected-signer late conflict and nonce-burning tests | DurablePort abort handling and completed-share-without-unanimous-activation test |
 
-The Stage 2C development report (`docs/V040_STAGE2C_COORDINATOR_HARDENING.md`)
-documents historical **153/153 native** and **11/11 Sweettest** results, plus
-an expected release identity failure. Those were not rerun on this Sprint 1
-branch and are **not** represented above as Sprint 1 PASS results.
+Security intent retained in the combined source:
 
-## Remaining security findings, compatibility and risks
+1. In relevant DKG rounds, conflicting authenticated and over-quota inbox slots abort the relay, including conflicts that arrive after a first valid observation. Unrelated signing-slot conflicts do not veto DKG.
+2. Selected-signing-sender conflicts and over-quota evidence abort signing; the signing journal remains responsible for nonce reservation, burning, and durable failure. Unselected participants do not get a veto.
+3. Relay poison now invokes worker connection closure/abort. Disconnect, malformed IPC, cancellation, supervisor timeout and partition have explicit fail-closed paths. A SIGKILL leaves a running checkpoint that **must not resume**, and completed shares are not automatically erased or activated.
+4. Group signing still requires unanimous activation and operator-approved signing intent; locally completed custody does not imply a globally activated group.
+5. Existing signer policy keeps exact proposal/app/agent pinning, fresh nonces, operation allowlists and role separation. No legacy get_inbox downgrade or automatic ambiguous-write retry was introduced.
 
-- The original checkpoint describes **seven** unlabelled findings
-  (1 High, 4 Medium, 2 Low); Agent 1's newly source-identified **eight**
-  (1 High, 4 Medium, 3 Low) in draft PR #2 are a separate register and
-  must **not** be equated to or assumed to close the original seven.
-- **S1-H01 (High, open):** default development custody writes decryption
-  material and software rollback anchor under the same state directory as
-  sealed shares. Real custody needs separately protected key source/anchor;
-  test-mode file permissions alone are insufficient.
-- **S1-M01 and S1-M02 (Medium, open):** native clients miss late inbox
-  conflicts; generic message envelopes lack exact app/context/proposal
-  binding. These block a multi-application SDK security claim.
-- **S1-M03 and S1-M04 (Medium):** permanent per-sender inbox quota imposes
-  rekey/expiry requirements; locally complete DKG is not global activation.
-  The independent reviewer found three additional Low issues concerning
-  operation-slot prefix collisions, relaxed-order receipt identities and
-  durable abort accounting.
-- **F1:** DKG can exit without durable abort; PR #5 proposes abort-on-disconnect
-  but no runtime or fault-injection test has executed on that code.
-- **F2:** Local share completion may occur without full group activation;
-  PR #5 proposes a fail-closed signing regression, but cannot turn local
-  completion into unanimous activation evidence.
-- Stage 2C introduces `get_inbox_slots`; native DKG/signing consumers still
-  require verified conflict-metadata handling and late-equivocation policy.
-- **R10-a:** relaxed chain ordering can yield a delivery receipt action hash
-  that is not the final stored action. Verify the transport/consumer contract.
-- Holochain protocol is scoped to the pinned 0.7.1 family; `main` is older.
-  Agent 4's draft SDK is not yet in the workspace. Its proposed native
-  FROST status read requires a separately reviewed signer authorisation
-  path; its write/activation/signing APIs remain unsupported. API
-  compatibility and cross-application replay binding remain unvalidated.
-- Stage 2C changed coordinator WASM / `.dna` / `.happ`; approved hashes still
-  identify Stage 2B artifacts. This **release gate remains open**.
-- GitHub Actions run `43771483501` completed **FAIL** in both PR jobs;
-  GitHub API shows **zero steps executed**, empty assigned runner names and
-  approximately two-second lifetimes. The log endpoint returned 404.
-  This suggests a pre-execution runner scheduling/provisioning problem,
-  but the actual cause is not confirmed. Runner disk/RAM and Holonix
-  provisioning therefore remain unvalidated. A valid YAML file and four passing local
-  policy tests are not a passing GitHub workflow.
+These are verified **source-presence and control-flow observations only**. Dynamic fault injection and security sign-off remain required.
 
-## Release control and operator action
+## 3. Workspace, native dependencies, lockfile, source approval
 
-Do **not** run `release_check.py --record` or
-`check_release.py --record-inventory` to create a green check. Review all
-source changes and all approved inventory differences first. Rebuild from the
-verified commit, capture old and new identities, obtain explicit operator
-approval, apply the approved updates and rerun checks *without* recording.
-There has been **no deployment or persistent-cell upgrade** in this work.
+- Added crates/holochain-dkg-sdk to root [workspace].members; left default-members and resolver unchanged.
+- SDK default feature is empty. It directly depends on the local core and security crates. Optional native-holochain enables the local worker dependency with its conductor-client feature and tokio sync. The worker feature transitively enables pinned Holochain 0.7.1 native websocket/conductor API, serialized-byte support and existing signed socket client. The PR #3 worker change also makes holochain_zome_types =0.7.1 unconditional because the structured inbox type is compiled without conductor-client.
+- Added the SDK package record to Cargo.lock using already locked dependency names: holochain-mpc-core, holochain-mpc-dkg-worker, holochain-mpc-security and tokio. **This is a manual lockfile reconciliation, not Cargo regeneration.** No registry versions were intentionally updated. A Rust runner must execute cargo generate-lockfile or cargo check and compare its generated lockfile, then cargo fetch --locked, cargo check --locked --workspace --all-targets and both feature builds before claiming correctness.
+- scripts/release_hashes.json and scripts/release_inventory.json were **not changed**. The root workspace membership, worker manifest dependency feature and SDK manifest/source inventory have changed and therefore diverge from approved release/source identities. This must remain a deliberate operator review gate, not be silently re-recorded by the integration agent. No approved hashes or coordinator artifacts were changed.
+- Native SDK live-read blocker: the existing FROST signer policy rejects GetProbeSessionStatus (a transport probe is not an approved FROST ceremony status read). A separately reviewed read-only status authorization is needed. SDK write, activation and signature APIs are explicitly unsupported; no production-ready SDK claim is made.
 
-## Remaining integration work / Sprint 2 candidates
+## 4. Evidence: commands, outcomes, exit codes and logs
 
-1. Review Agents 1–4 draft PRs (#2, #3, #5 and #1), map eight newly
-   identified findings to remediation owners, and do not conflate them with
-   the original seven unspecified findings.
-2. Reconcile four shared worker paths between Agents 2 and 3 after source
-   review; compile and test the combined trait/mocks and prove conflict
-   isolation, durable abort and fail-closed signing/DKG handling.
-3. Close or explicitly accept F1/F2 with tested lifecycle invariants and
-   disposable process-kill/restart scenarios.
-4. Bring in the SDK and update the approved workspace inventory only after
-   the new manifest, lockfile and binary implications are reviewed.
-5. Diagnose failed PR #4 workflow run `43771483501` (jobs have zero steps,
-   empty runner names and no retrievable logs), including repository Actions
-   permission/billing/runner eligibility and configuration; then
-   execute PR native checks, push/manual Sweettests and fault rehearsals on
-   the exact integrated commit, preserving exit codes and logs.
-6. Confirm rebuilt Stage 2C+ coordinator identities; obtain operator approval
-   for any release-hash update and rerun the read-only release checks.
-7. Repeat an independent security review of the combined changes and write
-   the final report with actual commits, test evidence and release decision.
+**GitHub connector operations (API results, not shell exit codes):**
+- Verified Stage 2C branch at 122679a7239b97584c153d7ed1feecd35b914061 and baseline Git tree 5d321ddb02946d939d13a5c7afcb1a38b5add719.
+- Read each PR's complete changed-path set and per-file patch; verified all five PR tips against GitHub metadata. Read PR-head Git trees and preserved unshared source blobs exactly.
+- Created branch sprint1/agent6-stage2c-integration-20261116 from the exact Stage 2C SHA: API SUCCESS.
+- Reconciled four shared source files against the same baseline; all patch contexts matched; zero overlapping edit ranges: STATIC MERGE CHECK PASS.
+- Created integrated Git tree e958aaf51c27d6a029950c1d8a1028c392174a5e, commit d5da2d37dcf2fee521c43786aab36c0f24accea0 with six parents, and fast-forwarded isolated integration ref: API SUCCESS.
+- An API success proves object/ref creation, **not** a working Rust build.
 
-**Final verdict: CHANGES REQUIRED — Blocking issues remain.**
+**Local Linux x86_64 environment, 2026-11-16T08:50:04Z:**
 
-This verdict must not be upgraded based solely on passing unit tests or
-configuration-file inspection.
+| Exact command | Exit code | Observed output | Disposition |
+| --- | ---: | --- | --- |
+| command -v rustc | 1 | NOT FOUND | Rust compilation NOT RUN |
+| command -v cargo | 1 | NOT FOUND | Cargo build/tests/lock regeneration NOT RUN |
+| command -v rustup | 1 | NOT FOUND | Rust toolchain unavailable |
+| command -v nix | 1 | NOT FOUND | Pinned Nix build NOT RUN |
+| command -v hc | 1 | NOT FOUND | Holochain Sweettests NOT RUN |
+| command -v python3 | 0 | /opt/pyvenv/bin/python3 | Python present |
+| command -v git | 0 | /usr/bin/git | Git present |
+| git ls-remote https://github.com/ConorTttttt/holochain-threshold-cryptography.git refs/heads/feature/v0.4.0-stage2c | 128 | fatal: unable to access ... Could not resolve host: github.com | Local clone NOT AVAILABLE |
+
+PyYAML 6.0.3 is installed. The upstream PR #4 description reports an earlier 4/4 Python workflow-policy test pass on GitHub-blob-equivalent local files, but that is **upstream author evidence**, not an independent Rust test or an integrated-build pass. Its reported Actions run 43771483501 failed with no assigned runner or job steps; do not count it as Rust execution.
+
+## 5. Required test-evidence matrix
+
+No compiler, Nix, or Holochain runner exists locally. **NOT RUN is not PASS**, and the integrated commit has no verified successful build.
+
+| Test group / exact command | Current status | Release condition |
+| --- | --- | --- |
+| cargo test --locked -p holochain-dkg-sdk --all-targets | **NOT RUN** | SDK default build/tests required |
+| cargo test --locked -p holochain-dkg-sdk --features native-holochain --all-targets | **NOT RUN** | Real native dependencies and read backend compile required |
+| cargo check --locked --workspace --all-targets | **NOT RUN** | Combined workspace check required |
+| cargo test --locked -p holochain-mpc-dkg-worker --features conductor-client --lib | **NOT RUN** | Native signed-transport checks required |
+| cargo test --locked -p holochain-mpc-dkg-worker --test relay_simulation | **NOT RUN** | PR #3 late equivocation and PR #5 partition/worker abort required |
+| cargo test --locked -p holochain-mpc-dkg-worker --test signing_session | **NOT RUN** | Late selected-signing conflict, nonce burn, incomplete activation required |
+| cargo test --locked -p holochain-mpc-dkg-worker --test node_service | **NOT RUN** | F1 clean EOF, truncated IPC, terminal journal abort required |
+| cargo test --locked -p holochain-mpc-dkg-worker --test dkg_restart | **NOT RUN** | No restart of nonterminal/aborted DKG required |
+| cargo test --locked -p holochain-mpc-dkg-worker --test share_custody | **NOT RUN** | F1 SIGKILL at round boundaries, share retention policy required |
+| cargo test --locked -p holochain-mpc-runtime --test dkg_journal | **NOT RUN** | F1 encrypted running-to-aborted journal transition required |
+| cargo test --locked -p holochain-mpc-dkg-worker relay_supervisor | **NOT RUN** | Cancellation mid-start, timeouts and shutdown required |
+| npm run test:sweettest | **NOT RUN** | Real Holochain conductor/coordinator regressions required |
+| cargo test --locked -p mpc --test revoke_cap_grant -- --nocapture --test-threads=1 | **NOT RUN** | Native capability and zome permission test required |
+| python3 -I scripts/check_release.py | **NOT RUN** | Operator-approved inventory gate; expected to report changed identities until approved |
+| npm run check:release | **NOT RUN** | Operator-controlled final artifact approval and hash validation |
+
+F1/F2 explicit fault scenarios to rehearse on disposable test identities: disconnect-before-Init (no false tombstone); clean EOF after Init and each round; malformed/truncated IPC; cancelled start; RPC deadline; network partition; SIGKILL at rounds 1/2/3 with persistent journal; completed-share survival; partial group activation with signature refusal; late conflicting DKG and selected-signing slots with a prior accepted variant and nonce exhaustion. No production node, real funds, approved signing share, persistent Lair state, or deployment may be used.
+
+## 6. Open security/release blockers
+
+1. **S1-H01 HIGH OPEN**: default share-custody key and software rollback anchor may be co-located with encrypted shares; production separation and independent witness not demonstrated. Do not release real custody.
+2. **S1-M01 still needs integrated dynamic proof**: source-level inbox/late-equivocation fixes are present, but real coordinator behavior, late visibility/finality and signed read permissions have not been run end to end.
+3. **S1-M02 / app-context boundary**: independently verify exact proposal/DNA/agent membership and no cross-app leakage in live multi-app conductor tests.
+4. **S1-M03 and F2 policy**: decide group-wide retention/retirement for partial completion; an individual sealed share must never imply active group or signing permission.
+5. **Native SDK read authorization**: separately approve a minimal read-only FROST status signer intent; never repurpose the transport-probe signer or weaken operator approval.
+6. **Cargo.lock and source inventory**: manually reconciled SDK lock stanza is not regenerated/verified; approved release inventories and source/hashes intentionally remain untouched and need operator review.
+7. **Rust/Holochain CI availability**: execute all matrix rows on a provisioned, pinned runner, attach exact test commands, exit statuses, timestamps, job IDs and unabridged failure logs. PR #4's prior runner-with-no-steps failure is not evidence of success.
+8. **Deployment gate**: independent security sign-off, explicit production-custody assumptions, artifact/hash approvals and passing integrated Sweettests are prerequisites. No coordinator deployment or Lair modification here.
+
+**Final verdict: CHANGES REQUIRED. Keep the integration PR draft, target Stage 2C rather than main, and do not merge or promote until all required checks are genuinely verified.**
