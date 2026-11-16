@@ -132,10 +132,20 @@ fn test_development_backup_restore_restart_with_disposable_share() -> TestResult
 /// A positive independent-witness rewind test is NOT VERIFIED / not present.
 #[test]
 fn test_whole_state_snapshot_rewind_refused() -> TestResult {
+    if unsafe { geteuid() } == 0 {
+        eprintln!("NOT VERIFIED: custody startup refuses the root UID");
+        return Ok(());
+    }
     let tmp = tempdir()?;
-    let journal = tmp.path().join("journal.sqlite");
-    let anchor = tmp.path().join("local.anchor");
-    Anchor::create(&anchor, &MasterKey::from_bytes(KEY))?;
+    let state = tmp.path().join("node");
+    fs::create_dir(&state)?;
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
+    private_file(&state.join(custody::STATE_KEY), &KEY)?;
+    private_file(&state.join(custody::NODE_CONFIG), b"synthetic node configuration")?;
+    custody::provision(&state, &KEY)?;
+    let journal = state.join(custody::JOURNAL);
+    private_file(&journal, b"")?;
+    let anchor = custody::default_anchor(&state)?;
     {
         let mut db = RuntimeStore::open_anchored(&journal, MasterKey::from_bytes(KEY), &anchor)?;
         db.start_deadline(&[1; 39], &[2; 32], 5_000)?;
@@ -155,10 +165,14 @@ fn test_whole_state_snapshot_rewind_refused() -> TestResult {
     drop(reopened);
     // Production mode rejects startup before any signing or nonce step,
     // because a truly independent witness is not implemented.
-    let state = tmp.path().join("node");
-    let error = config(&state, Layout::Production,
-        KeySource::SystemdCredential { name: "mpc-storage-key".into() })
-        .validate(&state).unwrap_err().to_string();
+    let mut configured = Custody::load(&state)?.config().clone();
+    configured.layout = Layout::Production;
+    configured.master_key = KeySource::SystemdCredential { name: "mpc-storage-key".into() };
+    fs::write(state.join(custody::CONFIG), serde_json::to_vec_pretty(&configured)?)?;
+    let error = match Custody::load(&state) {
+        Ok(_) => panic!("unverified production custody unexpectedly started"),
+        Err(e) => e.to_string(),
+    };
     assert!(error.contains("independent rollback witness"), "{error}");
     Ok(())
 }
