@@ -1,0 +1,38 @@
+name: Sprint 1.7 FROST adversarial native checks
+
+# This test-only workflow does not create or deploy Holochain cells, publish
+# artifacts, update release identities or use real credentials.
+on:
+  push:
+    branches:
+      - agents/sprint17-agent22-frost-adversarial-20261116
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frost-negative:
+    name: Seeded FROST protocol negative tests (E3 only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Prepare pinned Rust dependencies
+        run: nix develop --no-write-lock-file --command cargo fetch --locked
+      - name: Run targeted adversarial tests on exact SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/dkg-agent22
+          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+            export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-agent22
+            git rev-parse HEAD
+            rustc --version
+            cargo --version
+            cargo test --offline --locked -p holochain-mpc-security --test adversarial_properties -- --nocapture
+            cargo test --offline --locked -p holochain-mpc-frost-ed25519 --test three_agents -- --nocapture
+            cargo test --offline --locked -p holochain-mpc-frost-ed25519 --lib
+            git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+          '
