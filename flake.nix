@@ -22,6 +22,8 @@
         packages = (with pkgs; [
           nodejs_24
           binaryen
+          # Release inventory checks and their unit tests import yaml.
+          (python3.withPackages (ps: [ ps.pyyaml ]))
           # One of the holochain crate's build dependencies needs perl on PATH.
           # Only required if you build Sweettest suites; harmless otherwise.
           perl

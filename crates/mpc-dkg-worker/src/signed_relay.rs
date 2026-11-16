@@ -21,6 +21,8 @@ use std::path::PathBuf;
 /// capability secret, and sign using the approved Holochain agent authority.
 pub enum SignIntent<'a> {
     ReadInbox,
+    /// Mandatory for DKG and signing: never substituted with ReadInbox.
+    ReadInboxSlots,
     ReadProbeSession,
     ReadEncryptionKeys,
     RegisterEncryptionKey([u8;32]),
@@ -35,6 +37,7 @@ impl SignIntent<'_> {
         match self {
             SignIntent::ReadProbeSession => MpcCall::GetProbeSessionStatus,
             SignIntent::ReadInbox => MpcCall::GetInbox,
+            SignIntent::ReadInboxSlots => MpcCall::GetInboxSlots,
             SignIntent::ReadEncryptionKeys => MpcCall::GetEncryptionKeyBindings,
             SignIntent::RegisterEncryptionKey(_) => MpcCall::RegisterEncryptionKey,
             SignIntent::Publish(_) => MpcCall::SendProtocolMessage,
@@ -89,10 +92,11 @@ impl<S: FreshMpcSigner> MpcTransport for SignedAppTransport<S> {
             _ => Err("signed conductor returned wrong key registration response".into()),
         }
     }
-    async fn get_inbox(&mut self) -> Result<Vec<Envelope>, String> {
-        match self.call(SignIntent::ReadInbox).await? {
-            MpcZomeResult::Inbox(msgs) => Ok(msgs),
-            _ => Err("signed conductor returned wrong inbox response".into()),
+    async fn get_inbox_slots(&mut self) -> Result<crate::inbox_slots::InboxSlots, String> {
+        match self.call(SignIntent::ReadInboxSlots).await
+            .map_err(|e| format!("get_inbox_slots is required; no legacy inbox fallback: {e}"))? {
+            MpcZomeResult::InboxSlots(slots) => Ok(slots),
+            _ => Err("signed conductor returned wrong structured inbox response".into()),
         }
     }
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>, String> {
@@ -127,7 +131,9 @@ impl<S: FreshMpcSigner> SigningTransport for SignedAppTransport<S> {
             _ => Err("signed conductor returned wrong approval response".into()),
         }
     }
-    async fn inbox(&mut self) -> Result<Vec<Envelope>, String> { self.get_inbox().await }
+    async fn inbox_slots(&mut self) -> Result<crate::inbox_slots::InboxSlots, String> {
+        MpcTransport::get_inbox_slots(self).await
+    }
     async fn publish(&mut self, envelope: &Envelope) -> Result<(), String> {
         MpcTransport::publish(self, envelope).await.map(|_| ())
     }
