@@ -135,6 +135,15 @@ format and `InboxEvent` integrity schema are untouched.
 | `private_inbox_isolation_preserved` | New four-conductor test and existing three-conductor private read. |
 | Offline peer and visibility-race behaviour | **NOT RUN / incomplete**: no shutdown/partition fault harness or forced gossip delay. Failure must be treated as fail-closed; unknown delivery outcome is never automatically retried. |
 
+### Suite wiring
+
+At commit `545b4ebed7f8cfd613fe787109df4102c8fbe4ef`,
+`package.json` was updated so the normal `npm run test:sweettest`
+suite also invokes this test file, and an opt-in
+`npm run test:fable-conductors` script builds the disposable hApp and runs
+only Agent 21 cases. **Neither script was executed here.** Existing
+tests were not skipped, weakened or replaced.
+
 ## 5. Evidence by Fable E1–E8
 
 | Level | Agent 21 status | Explanation |
