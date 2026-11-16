@@ -2759,6 +2759,8 @@ dependencies = [
  "holochain-mpc-core",
  "holochain-mpc-dkg-worker",
  "holochain-mpc-security",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -2815,6 +2817,7 @@ dependencies = [
 name = "holochain-mpc-frost-ed25519"
 version = "0.3.4"
 dependencies = [
+ "frost-core",
  "frost-ed25519",
  "holochain-mpc-core",
  "holochain-mpc-runtime",

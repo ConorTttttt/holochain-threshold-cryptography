@@ -141,6 +141,53 @@ mod tests {
         fs::hard_link(&file, &hardlink).unwrap();
         assert!(read_app_token(&file).is_err());
     }
+
+    #[test]
+    fn old_or_malformed_coordinator_status_schema_fails_closed() {
+        // Old coordinators that lack ready_observed or a structured spec
+        // cannot be interpreted as ReadyToStart. Never fall back to inbox.
+        use holochain_zome_types::prelude::{ActionHash, AgentPubKey, DnaHash, ExternIO};
+        use crate::ipc::ChannelContext;
+        use crate::signed_call_policy::MpcCall;
+        #[derive(serde::Serialize)]
+        struct LegacyStatus {
+            spec: holochain_mpc_core::SessionSpec,
+            accepted: Vec<AgentPubKey>,
+        }
+        let agent=AgentPubKey::from_raw_32(vec![1;32]);
+        let peer=AgentPubKey::from_raw_32(vec![2;32]);
+        let mut members=vec![agent.get_raw_39().to_vec(),peer.get_raw_39().to_vec()];
+        members.sort();
+        let spec=holochain_mpc_core::SessionSpec {
+            session_id: [5;32], application_id:"org.example.test".into(),
+            protocol_id:"frost-ed25519".into(), protocol_version:1,
+            context_hash:[7;32], participants:members, threshold:2,max_round:6,
+        };
+        let pin=ConductorPin {
+            app_id:"installed-app".into(), role:"mpc".into(),
+            dna_hash:DnaHash::from_raw_32(vec![3;32]).get_raw_39().to_vec(),
+            node:ChannelContext {
+                worker_agent:agent.get_raw_39().to_vec(),
+                proposal_action:ActionHash::from_raw_32(vec![4;32]).get_raw_39().to_vec(),
+                session_id:[5;32],channel_id:[6;32],
+            },
+        };
+        let legacy=ExternIO::encode(LegacyStatus {spec:spec.clone(),accepted:vec![]}).unwrap();
+        assert!(decode_mpc_response(MpcCall::GetProbeSessionStatus,&pin,legacy).is_err());
+        let malformed=ExternIO::encode(serde_json::json!({"ready_observed":true})).unwrap();
+        assert!(decode_mpc_response(MpcCall::GetProbeSessionStatus,&pin,malformed).is_err());
+        #[derive(serde::Serialize)]
+        struct CurrentStatus {
+            spec: holochain_mpc_core::SessionSpec,
+            accepted: Vec<AgentPubKey>,
+            ready_observed: bool,
+        }
+        let current=ExternIO::encode(CurrentStatus {spec,accepted:vec![],ready_observed:false}).unwrap();
+        assert!(matches!(
+            decode_mpc_response(MpcCall::GetProbeSessionStatus,&pin,current),
+            Ok(MpcZomeResult::ProbeSession {ready:false,..})
+        ));
+    }
 }
 
 /// Typed, bounded results of approved MPC zome calls. `ZomeCalled` on its own

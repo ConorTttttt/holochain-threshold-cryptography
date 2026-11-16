@@ -45,6 +45,8 @@ pub mod transport_probe;
 pub mod probe_signer;
 #[cfg(all(unix, feature = "lair-signer"))]
 pub mod signing_signer;
+#[cfg(all(unix, feature = "lair-signer"))]
+pub mod frost_status_signer;
 use ipc::{AuthChannel, AuthFrame, ChannelContext, Role};
 use holochain_mpc_core::Envelope;
 use holochain_mpc_frost_ed25519 as frost;

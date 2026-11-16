@@ -190,12 +190,22 @@ impl ConductorBridge {
         Ok(outbound)
     }
 
+    // INV-13: An authenticated DHT observation is NOT independent operator
+    // approval of a recipient encryption key. No authenticated, out-of-band
+    // approval channel is specified for the current signed relay.
+    // Keep the live secret-bearing boundary CLOSED until that contract and its
+    // ceremony-scoped key roster are approved and implemented.
+    fn require_round_two_key_approval() -> Result<(), &'static str> {
+        Err("INV-13: independently authorised Round-2 encryption-key roster unavailable; live delivery blocked")
+    }
+
     /// Never accept arbitrary caller-constructed pins at the Round-2 gate.
     /// Use the exact complete roster observed in the trusted Holochain zome
     /// response and pin the worker's own secret-derived key to that record.
     pub fn round_two(&mut self, records: &[KeyEvidence], my_key: [u8;32])
         -> Result<([u8;32], Vec<Envelope>), String>
     {
+        Self::require_round_two_key_approval().map_err(str::to_owned)?;
         let pins = self.pins_from_conductor(records, my_key)?;
         let Reply::RoundTwo { transcript_hash, outbound } =
             self.command(Command::BeginRoundTwo { pinned_keys: pins })?

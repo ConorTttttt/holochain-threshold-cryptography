@@ -2,9 +2,9 @@ name: DKG SDK CI
 
 on:
   pull_request:
-    branches: [main, feature/v0.4.0-stage2c]
+    branches: [main, feature/v0.4.0-stage2c, sprint1/agent6-stage2c-integration-20261116]
   push:
-    branches: [main, feature/v0.4.0-stage2c]
+    branches: [main, feature/v0.4.0-stage2c, sprint18/dkg-sdk-integration-recovery-20261116]
   workflow_dispatch:
     inputs:
       suite:
@@ -68,9 +68,13 @@ jobs:
             export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-s1
             cargo check --offline --locked --workspace --all-targets
             npm run test:native
+            cargo check --offline --locked -p holochain-mpc-dkg-worker --all-targets
+            cargo check --offline --locked -p holochain-mpc-dkg-worker --features conductor-client --all-targets
+            cargo check --offline --locked -p holochain-mpc-dkg-worker --features lair-signer --all-targets
             cargo test --offline --locked -p holochain-mpc-dkg-worker --features conductor-client --lib
             if test -f crates/holochain-dkg-sdk/Cargo.toml; then
               cargo test --offline --locked -p holochain-dkg-sdk --all-targets
+              cargo test --offline --locked -p holochain-dkg-sdk --features native-holochain --all-targets
             else
               echo "NOT RUN: SDK crate is not yet on this branch"
             fi

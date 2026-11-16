@@ -370,3 +370,209 @@ impl<N: LocalDkgNode, T: MpcTransport> RelayEngine<N, T> {
         }
     }
 }
+
+
+#[cfg(test)]
+mod round_two_uniqueness_tests {
+    //! Isolates the relay's sender-count check with TWO independently sealed,
+    //! decryptable FROST packages. No malformed JSON, changed authenticated
+    //! sender, or reused Round-3 slot is used as the duplicate trigger.
+    //!
+    //! The relay is placed directly into Shares to target poll semantics.
+    //! The native Controller's own terminal guard is exercised separately in
+    //! tests/round_two_security.rs. This is NOT end-to-end conductor evidence.
+    use super::*;
+    use holochain_mpc_core::{commitment, SessionSpec};
+    use holochain_mpc_frost_ed25519 as frost;
+    use holochain_mpc_security::sealed::NativeChannelKey;
+    use std::sync::{Arc, Mutex};
+
+    fn binding() -> Binding {
+        Binding::new(vec![0x5e;39], SessionSpec {
+            session_id:commitment("relay-round2-security",b"disposable"),
+            application_id:"org.example.agent19.relay".into(),
+            protocol_id:frost::PROTOCOL_ID.into(),
+            protocol_version:frost::PROTOCOL_VERSION,
+            context_hash:commitment("relay-round2-context",b"test"),
+            participants:(1u8..=3).map(|n|vec![n;39]).collect(),
+            threshold:2,max_round:6,
+        }).unwrap()
+    }
+
+    // Generate a genuine FROST part2 share from a fully verified unanimous
+    // in-memory echo transcript (not from an arbitrary serde_json payload).
+    fn valid_share(binding: &Binding) -> frost::RoundTwo {
+        let members=&binding.spec.participants;
+        let ceremony=Ceremony {spec:binding.spec.clone(),
+            proposal_action:binding.proposal_action.clone()};
+        let mut parties=BTreeMap::new();
+        let mut packages=BTreeMap::new();
+        let mut states=Vec::new();
+        let mut announcements=Vec::new();
+        for member in members {
+            let (party,package)=frost::DkgParty::begin(binding.clone(),member).unwrap();
+            packages.insert(binding.id_of(member).unwrap(),package.clone());
+            parties.insert(binding.id_of(member).unwrap(),party);
+            let mut echo=EchoBroadcast::new(ceremony.clone(),member.clone()).unwrap();
+            announcements.push(echo.begin(serde_json::to_vec(&package).unwrap()).unwrap());
+            states.push(echo);
+        }
+        let mut echoes=Vec::new();
+        for (origin, announce) in announcements.into_iter().enumerate() {
+            for receiver in 0..members.len() {
+                if receiver==origin {continue;}
+                let echo=states[receiver].receive(&members[origin],announce.clone())
+                    .unwrap().expect("authenticated echo");
+                echoes.push((receiver,echo));
+            }
+        }
+        for (echoer,echo) in echoes {
+            for receiver in 0..members.len() {
+                if receiver!=echoer {
+                    states[receiver].receive(&members[echoer],echo.clone()).unwrap();
+                }
+            }
+        }
+        let votes:Vec<_>=states.iter_mut().map(|s|s.attest().unwrap()).collect();
+        for (origin,vote) in votes.into_iter().enumerate() {
+            for receiver in 0..members.len() {
+                if receiver!=origin {
+                    states[receiver].receive(&members[origin],vote.clone()).unwrap();
+                }
+            }
+        }
+        let gate=states[1].finalize().unwrap();
+        let outgoing=parties.get_mut(&binding.id_of(&members[1]).unwrap()).unwrap()
+            .part2(&packages,&gate).unwrap();
+        outgoing[&binding.id_of(&members[0]).unwrap()].clone()
+    }
+
+    struct CryptoNode {
+        binding:Binding,
+        receiver:Vec<u8>,
+        sender:Vec<u8>,
+        receiver_key:NativeChannelKey,
+        sender_key:[u8;32],
+        accepted:usize,
+        aborted:bool,
+    }
+    impl LocalDkgNode for CryptoNode {
+        fn initialize(&mut self)->Result<([u8;32],Vec<Envelope>),String>{
+            Err("not part of this isolated relay test".into())
+        }
+        fn attest(&mut self)->Result<Vec<Envelope>,String>{
+            Err("not part of this isolated relay test".into())
+        }
+        fn round_two(&mut self,_:&[KeyEvidence],_:[u8;32])
+            ->Result<([u8;32],Vec<Envelope>),String>{
+            Err("not part of this isolated relay test".into())
+        }
+        fn finalize(&mut self)->Result<GroupDescriptor,String>{
+            Err("a single sender can never complete DKG".into())
+        }
+        fn validate_outbound(&self,_:&[Envelope])->Result<(),String>{Ok(())}
+        fn abort(&mut self)->Result<(),String>{self.aborted=true;Ok(())}
+        fn deliver(&mut self,env:Envelope)->Result<Vec<Envelope>,String>{
+            let frame=frost::open_dkg_round_two(&self.binding,&env,
+                &self.receiver,&self.sender,&self.receiver_key,self.sender_key)
+                .map_err(|e|e.to_string())?;
+            if !matches!(frame.message,frost::Message::DkgRound2(_)){
+                return Err("not a FROST share".into());
+            }
+            self.accepted+=1; // Intentionally permissive: relay must reject #2.
+            Ok(vec![])
+        }
+    }
+
+    struct Inbox {
+        slots:Arc<Mutex<Vec<Envelope>>>,
+    }
+    impl MpcTransport for Inbox {
+        async fn register_key(&mut self,_:[u8;32])->Result<Vec<u8>,String>{
+            Err("registration not used".into())
+        }
+        async fn get_inbox_slots(&mut self)->Result<InboxSlots,String>{
+            Ok(InboxSlots {envelopes:self.slots.lock().unwrap().clone(),
+                conflicts:vec![],over_quota:vec![]})
+        }
+        async fn get_encryption_keys(&mut self)->Result<Vec<KeyEvidence>,String>{
+            Err("key lookup not used".into())
+        }
+        async fn publish(&mut self,_:&Envelope)->Result<SendReceipt,String>{
+            Err("publication not used".into())
+        }
+    }
+
+    type TestRelay=RelayEngine<CryptoNode,Inbox>;
+
+    fn fixture()->(TestRelay,Arc<Mutex<Vec<Envelope>>>,Envelope,Envelope) {
+        let binding=binding();
+        let share=valid_share(&binding);
+        let sender_key=NativeChannelKey::generate();
+        let receiver_key=NativeChannelKey::generate();
+        let members=&binding.spec.participants;
+        let frame=frost::Frame {
+            proposal_action:binding.proposal_action.clone(),
+            operation_id:binding.spec.session_id,
+            message:frost::Message::DkgRound2(share),
+        };
+        let first=frost::seal_dkg_round_two(&binding,&frame,
+            &members[1],&members[0],1,&sender_key,receiver_key.public_key()).unwrap();
+        let second=frost::seal_dkg_round_two(&binding,&frame,
+            &members[1],&members[0],2,&sender_key,receiver_key.public_key()).unwrap();
+        assert_ne!(first.payload,second.payload);
+        let slots=Arc::new(Mutex::new(Vec::new()));
+        let node=CryptoNode {
+            receiver:members[0].clone(),sender:members[1].clone(),
+            binding:binding.clone(),receiver_key,sender_key:sender_key.public_key(),
+            accepted:0,aborted:false,
+        };
+        let mut relay=RelayEngine::new(node,Inbox {slots:slots.clone()},
+            binding,members[0].clone()).unwrap();
+        // Force ONLY the receiving-shares phase under test: announcements,
+        // transcript and transition are independently tested elsewhere.
+        relay.phase=Phase::Shares;
+        (relay,slots,first,second)
+    }
+
+    #[tokio::test]
+    async fn duplicate_round_two_in_one_poll_aborts() {
+        let (mut relay,inbox,first,second)=fixture();
+        inbox.lock().unwrap().extend([first,second]);
+        let err=relay.poll_once().await.unwrap_err();
+        assert!(err.contains("multiple encrypted shares from one member"),"{err}");
+        assert_eq!(relay.node.accepted,2,"both ciphertexts must decrypt first");
+        assert_eq!(relay.phase(),Phase::Aborted);
+        assert!(relay.node.aborted);
+        assert!(relay.descriptor().is_none());
+        assert!(relay.poll_once().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn duplicate_round_two_across_polls_aborts() {
+        let (mut relay,inbox,first,second)=fixture();
+        inbox.lock().unwrap().push(first);
+        assert_eq!(relay.poll_once().await.unwrap().delivered,1);
+        assert_eq!(relay.phase(),Phase::Shares);
+        inbox.lock().unwrap().push(second);
+        let err=relay.poll_once().await.unwrap_err();
+        assert!(err.contains("multiple encrypted shares from one member"),"{err}");
+        assert_eq!(relay.node.accepted,2);
+        assert_eq!(relay.phase(),Phase::Aborted);
+        assert!(relay.node.aborted);
+        assert!(relay.descriptor().is_none());
+    }
+
+    #[tokio::test]
+    async fn duplicate_round_two_reverse_order_across_polls_aborts() {
+        let (mut relay,inbox,first,second)=fixture();
+        inbox.lock().unwrap().push(second);
+        assert_eq!(relay.poll_once().await.unwrap().delivered,1);
+        inbox.lock().unwrap().push(first);
+        let err=relay.poll_once().await.unwrap_err();
+        assert!(err.contains("multiple encrypted shares from one member"),"{err}");
+        assert_eq!(relay.node.accepted,2);
+        assert_eq!(relay.phase(),Phase::Aborted);
+        assert!(relay.node.aborted);
+    }
+}

@@ -210,14 +210,31 @@ impl SigningSession {
         store.check_anchor().map_err(|e| e.to_string())?;
         store.start_deadline(&binding.proposal_action, &plan.operation_id, deadline_ms)
             .map_err(|e| e.to_string())?;
-        let own = signer.prepare(store, &approved, &plan.message, now_ms).map_err(|e| e.to_string())?;
-        let mut commitments = BTreeMap::new();
-        commitments.insert(binding.id_of(local).map_err(|e| e.to_string())?, own.clone());
-        let session = Self { binding, local: local.to_vec(), plan, active, approved,
-            public: custody.public_key_package, signer, commitments, package: None, collector: None,
-            early_shares: BTreeMap::new(), shares_from: BTreeSet::new(), artifact: None };
-        let outbound = session.to_others(Message::SigningCommitment(own))?;
-        Ok((session, outbound))
+        // S15-L01: once the deadline is durably registered, errors from
+        // preparation, encoding or outbound construction MUST leave a durable
+        // terminal record, not an orphaned open signing lifecycle.
+        let proposal = binding.proposal_action.clone();
+        let operation = plan.operation_id;
+        let result = (|| -> Result<(Self, Vec<Envelope>), String> {
+            let own = signer.prepare(store, &approved, &plan.message, now_ms)
+                .map_err(|e| e.to_string())?;
+            let mut commitments = BTreeMap::new();
+            commitments.insert(binding.id_of(local).map_err(|e| e.to_string())?, own.clone());
+            let session = Self { binding, local: local.to_vec(), plan, active, approved,
+                public: custody.public_key_package, signer, commitments, package: None, collector: None,
+                early_shares: BTreeMap::new(), shares_from: BTreeSet::new(), artifact: None };
+            let outbound = session.to_others(Message::SigningCommitment(own))?;
+            Ok((session, outbound))
+        })();
+        result.map_err(|err| {
+            // A transaction/anchor failure here is itself a release blocker;
+            // never return a commitment or retry an ambiguous operation.
+            let reason: String = err.chars().take(200).collect();
+            match store.record_abort(&proposal, &operation, &reason) {
+                Ok(()) => err,
+                Err(journal) => format!("{err}; begin abort could not be journaled: {journal}"),
+            }
+        })
     }
 
     pub fn artifact(&self) -> Option<&SignedArtifact> { self.artifact.as_ref() }

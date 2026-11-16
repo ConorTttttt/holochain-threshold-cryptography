@@ -68,7 +68,9 @@ libc = "0.2"
 # Do not use holochain_client 0.8.x: it targets Holochain 0.6.x.
 holochain_websocket = { version = "=0.7.1", optional = true }
 holochain_conductor_api = { version = "=0.7.1", optional = true }
-holochain_zome_types = { version = "=0.7.1", optional = true }
+# Wire types are required by standalone relay/inbox-slot consumers too.
+# This is not a conductor-client or signing-credential feature.
+holochain_zome_types = "=0.7.1"
 holochain_serialized_bytes = { workspace = true, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "signal"] }
 holochain_nonce = { version = "=0.7.1", optional = true }
@@ -80,7 +82,7 @@ rand = { version = "0.8.5", optional = true }
 
 [features]
 default = []
-conductor-client = ["dep:holochain_websocket", "dep:holochain_conductor_api", "dep:holochain_zome_types", "dep:holochain_serialized_bytes"]
+conductor-client = ["dep:holochain_websocket", "dep:holochain_conductor_api", "dep:holochain_serialized_bytes"]
 lair-signer = ["conductor-client", "dep:holochain_nonce", "dep:holochain_keystore", "dep:lair_keystore_api", "dep:url2", "dep:rpassword", "dep:rand"]
 
 [dev-dependencies]
@@ -107,4 +109,11 @@ required-features = ["lair-signer"]
 [[test]]
 name = "transport_probe"
 path = "tests/transport_probe.rs"
+required-features = ["lair-signer"]
+
+# Interactive live writes require the privileged Lair signer feature, even
+# during --all-targets checks. Ordinary builds must not compile this example.
+[[example]]
+name = "phase5c_live_writes"
+path = "examples/phase5c_live_writes.rs"
 required-features = ["lair-signer"]

@@ -1,0 +1,21 @@
+# Sprint 1.8 — Security review handoff
+
+**Decision: CHANGES REQUIRED.** No production use, valuable key custody, durable deployment, merge to main, release hash/inventory recording, or release sign-off is authorised. This is an engineering integration candidate, not an independent audit.
+
+## Review targets
+1. Validate one exact final integration SHA, not a collection of PR heads. Check full `git diff 899e433...HEAD`, commits preserving PR #10–#17 source provenance, and combined PR #14/#15 `three_agents.rs` test additions.
+2. FROST attribution: previous PR #14 test swapped two genuine shares under opposite authenticated senders and upstream aggregation accepted a valid sum. The new collector explicitly invokes upstream `frost_core::verify_signature_share` against the authenticated participant identifier and `PublicKeyPackage::verifying_shares` **before** aggregate. Inspect upstream frost-core 3.0.0 function and cryptographic error semantics; do not claim a valid group signature is proof of an individual participant. Review swapped/replayed/tampered positive and negative assertions and test results.
+3. INV-13 Round-2 key approval: `verify_explicit_key_roster` exists separately, but the live conductor bridge only had observed records. Source now blocks all live Round-2 sends until a ceremony-scoped independently approved key roster is introduced into the trusted native boundary. Human must define authority, exact proposal/app/DNA/cell/participant/key-action binding, rotation/fork semantics and evidence delivery before implementation; do not make a DHT read its own approval. The legacy positive conductor DKG test will intentionally be blocked. Never weaken tests to conceal this.
+4. Fable F-8 / S15-L01: PR #15 cleanup drops pending nonce on store error. New `SigningSession::begin` records an abort after any failure following successful deadline registration, and a new SQLite reopen test checks terminal state and fresh operation. Inspect idempotency, committed-but-unacknowledged writes, anchor failures, restart semantics, error paths and fail-closed behaviour. Check no operation resumes or retries ambiguously.
+5. Examine default/conductor-client/lair-signer feature graph, exact Cargo.lock changes, SDK read-only status signer privilege allowlists and legacy protocol mismatches. Reject feature enablement that leaks privileged credentials into default builds.
+6. Execute real disposable Holochain 0.7.1 Sweettests for identity/provenance/capability revocation, quorum and inbox conflict semantics, encrypted Round-3 enforcement, offline/concurrent delivery. Confirm E5/E6 separately. Authenticated SDK `get_session_status` must validate all bound identities and must not equate `ReadyToStart` with activated group or completed DKG.
+7. Confirm release-inventory review diff and specific dependency packages with operator. Do **not** modify `scripts/release_inventory.json` or `scripts/release_hashes.json` until independent operator approval. Retain pinned versions and artifact identities.
+
+## Required approvals before any security closure
+- Operator protocol decision: independently authorised Round-2 key roster and admission rules (INV-13), including whether a wire/persistence change is permitted.
+- Operator decision: treatment of v1 signing slot collisions, finite group lifetime/rekey and strict cross-app v2 binding.
+- Operator custody/release inventory and artifact identity approval; independent monotonic rollback evidence for production, if ever proposed.
+- Independent FROST cryptographic reviewer and Holochain conductor reviewer (E8), with exact SHA, all test outputs and negative coverage.
+
+## Evidence standards
+Use Fable E1 source / E2 compile / E3 native execution / E4 WASM+hApp / E5 live conductor / E6 native cryptography across conductors / E7 adversarial execution / E8 independent review. Do not promote E1 to E3–E8. `docs/sdk/SPRINT18_TEST_EVIDENCE.md` records older CI failures and exact-head commands; update only from observed logs. If a mandatory criterion is unmet, the final disposition remains **CHANGES REQUIRED**.
