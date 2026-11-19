@@ -417,13 +417,27 @@ fn aborted_ceremony_seals_nothing_recoverable() {
 
 // ---- v0.4.0 Phase 7 custody hardening ----------------------------------
 //
-// These tests run the DKG through real `mpc-node serve` processes, exactly as
-// the relay service drives them, and reopen shares through `recover_share`,
-// the path `mpc-sign` and `activate-group` use. Synthetic agents, temporary
-// directories, an in-memory stand-in for the conductor; no Lair.
+// These tests run the DKG inside real `mpc-node serve` processes and reopen
+// shares through `recover_share`, the path `mpc-sign` and `activate-group`
+// use. Synthetic agents, temporary directories, an in-memory stand-in for the
+// conductor; no Lair.
+//
+// Sprint 1.8B / INV-13: the production `ConductorBridge::round_two` refuses
+// every live Round-2 until an independently authorised key roster exists.
+// The custody tests below exercise SIGNING-time custody (nonce journal,
+// rollback, backup, epoch retirement), not Round-2 admission, so their DKG
+// precondition is produced by `OfflineServedPort`: an explicitly test-only
+// host that speaks the node's authenticated IPC directly and pins keys from
+// the in-memory synthetic registry, exactly like `DurablePort` and
+// `ChildPort` above. It is NOT an INV-13 approval mechanism, is not reachable
+// from library code, and is not evidence of an admitted live ceremony.
+// `served_bridge_refuses_round_two_without_inv13_approval` separately proves
+// that the production bridge path stops before any Round-2 ciphertext exists.
 
 use holochain_mpc_dkg_worker::conductor_bridge::ConductorBridge;
-use holochain_mpc_dkg_worker::node_service::{provision, recover_share, write_descriptor};
+use holochain_mpc_dkg_worker::node_service::{key_path, provision, recover_share, socket_path,
+    write_descriptor, MAX_IPC_LINE};
+use holochain_mpc_dkg_worker::ipc::AuthFrame;
 use holochain_mpc_dkg_worker::signing::{activated_group, approved_intent, run_signing, ActivationEvidence,
     ApprovalEvidence, SigningPlan, SigningPoll, SigningSession, SigningTransport, PLAN_SCHEMA};
 use holochain_mpc_frost_ed25519::SignedArtifact;
@@ -431,31 +445,121 @@ use holochain_mpc_security::activation::{ActivatedGroup, ApprovedIntent};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// Provision three node directories as `mpc-node provision` does and complete
-/// the DKG through three `mpc-node serve` processes; every process has exited
-/// when this returns, and each directory holds the group descriptor.
+/// OFFLINE TEST FIXTURE ONLY. A host for one `mpc-node serve` socket that pins
+/// Round-2 keys from the in-memory synthetic registry WITHOUT the INV-13
+/// independent-approval gate. It reads the node's raw IPC key from the
+/// temporary directory this test provisioned; it exists solely so custody
+/// tests can obtain sealed shares produced by the real node service. Never
+/// copy this into library or service code: see `served_bridge_refuses_round_two_without_inv13_approval`.
+struct OfflineServedPort {
+    id: Vec<u8>, binding: Binding, host: AuthChannel,
+    socket: std::os::unix::net::UnixStream,
+    reader: std::io::BufReader<std::os::unix::net::UnixStream>,
+}
+impl OfflineServedPort {
+    fn connect(dir: &Path, ctx: ChannelContext, binding: &Binding) -> Result<Self, String> {
+        let raw = std::fs::read(key_path(dir)).map_err(|e| e.to_string())?;
+        let key: [u8; 32] = raw.as_slice().try_into().map_err(|_| "IPC key must be 32 bytes".to_string())?;
+        let host = AuthChannel::new(key, ctx.clone(), Role::Host)?;
+        let socket = std::os::unix::net::UnixStream::connect(socket_path(dir)).map_err(|e| e.to_string())?;
+        socket.set_read_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
+        let reader = std::io::BufReader::new(socket.try_clone().map_err(|e| e.to_string())?);
+        Ok(Self { id: ctx.worker_agent, binding: binding.clone(), host, socket, reader })
+    }
+    fn invoke(&mut self, cmd: Command) -> Result<Reply, String> {
+        use std::io::{BufRead, Read, Write};
+        let data = serde_json::to_vec(&self.host.seal(cmd)?).map_err(|e| e.to_string())?;
+        self.socket.write_all(&data).and_then(|_| self.socket.write_all(b"\n"))
+            .and_then(|_| self.socket.flush()).map_err(|e| e.to_string())?;
+        let mut line = Vec::new();
+        let count = (&mut self.reader).take((MAX_IPC_LINE + 1) as u64)
+            .read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+        if count == 0 || line.last() != Some(&b'\n') { return Err("node closed the connection".into()); }
+        let reply: AuthFrame<Reply> = serde_json::from_slice(&line).map_err(|e| e.to_string())?;
+        match self.host.open(reply)? {
+            Reply::Error { .. } => Err("node rejected authenticated command".into()),
+            body => Ok(body),
+        }
+    }
+}
+impl LocalDkgNode for OfflineServedPort {
+    fn abort(&mut self) -> Result<(), String> {
+        self.socket.shutdown(std::net::Shutdown::Both).map_err(|e| e.to_string())
+    }
+    fn initialize(&mut self) -> Result<([u8;32],Vec<Envelope>),String> {
+        let Reply::Initialized { local_public_key, outbound } = self.invoke(
+            Command::Init { binding: self.binding.clone(), local: self.id.clone() })? else {
+            return Err("wrong initialized reply".into());
+        };
+        Ok((local_public_key, outbound))
+    }
+    fn deliver(&mut self, env: Envelope) -> Result<Vec<Envelope>,String> {
+        let Reply::Delivered { outbound } = self.invoke(Command::Deliver {
+            authenticated_sender: env.sender.clone(), envelope: env })? else {
+            return Err("wrong deliver reply".into());
+        };
+        Ok(outbound)
+    }
+    fn attest(&mut self) -> Result<Vec<Envelope>,String> {
+        let Reply::Attesting { outbound } = self.invoke(Command::Attest)? else {
+            return Err("wrong attest reply".into());
+        };
+        Ok(outbound)
+    }
+    fn round_two(&mut self, records: &[KeyEvidence], _own_key: [u8;32])
+        -> Result<([u8;32],Vec<Envelope>),String> {
+        let pinned_keys = records.iter().map(|r| PeerKeyBinding {
+            member: r.author.clone(), public_key: r.public_key, action: r.action.clone() }).collect();
+        let Reply::RoundTwo { transcript_hash, outbound } =
+            self.invoke(Command::BeginRoundTwo { pinned_keys })? else {
+            return Err("wrong round two reply".into());
+        };
+        Ok((transcript_hash, outbound))
+    }
+    fn finalize(&mut self) -> Result<GroupDescriptor,String> {
+        let Reply::Completed { descriptor } = self.invoke(Command::Finalize)? else {
+            return Err("wrong finalize reply".into());
+        };
+        Ok(descriptor)
+    }
+    fn validate_outbound(&self, out: &[Envelope]) -> Result<(),String> {
+        out.iter().try_for_each(|env| env.validate_against(&self.binding.spec).map_err(|e| e.to_string()))
+    }
+}
+
+/// Provision `dir` as `mpc-node provision` does, launch `mpc-node serve`, and
+/// wait for its socket with `connect` (production bridge or offline fixture).
+fn spawn_served<P>(dir: &Path, ctx: &ChannelContext,
+    connect: impl Fn() -> Result<P, String>) -> (P, std::process::Child) {
+    provision(dir, ctx.clone()).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpc-node")).arg("serve").arg(dir)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().unwrap();
+    let since = Instant::now();
+    loop {
+        match connect() {
+            Ok(port) => return (port, child),
+            Err(e) => {
+                assert!(child.try_wait().unwrap().is_none(), "mpc-node serve exited early: {e}");
+                assert!(since.elapsed() < Duration::from_secs(10), "node socket unavailable: {e}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+/// Provision three node directories and complete the DKG inside three
+/// `mpc-node serve` processes via the OFFLINE fixture host; every process has
+/// exited when this returns, and each directory holds the group descriptor.
 async fn served_dkg(root: &Path, binding: &Binding) -> (Vec<PathBuf>, GroupDescriptor) {
     let shared = Arc::new(Mutex::new(Network::default()));
     let (mut children, mut relays, mut dirs) = (Vec::new(), Vec::new(), Vec::new());
     for member in &binding.spec.participants {
         let dir = root.join(format!("node-{}", member[0]));
         let ctx = context(binding, member);
-        provision(&dir, ctx.clone()).unwrap();
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mpc-node")).arg("serve").arg(&dir)
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().unwrap();
-        let since = Instant::now();
-        let bridge = loop {
-            match ConductorBridge::connect(&dir, ctx.clone(), binding.clone()) {
-                Ok(bridge) => break bridge,
-                Err(e) => {
-                    assert!(child.try_wait().unwrap().is_none(), "mpc-node serve exited early: {e}");
-                    assert!(since.elapsed() < Duration::from_secs(10), "node socket unavailable: {e}");
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-        };
+        let (port, child) = spawn_served(&dir, &ctx,
+            || OfflineServedPort::connect(&dir, ctx.clone(), binding));
         let transport = Transport { shared: shared.clone(), local: member.clone() };
-        relays.push(RelayEngine::new(bridge, transport, binding.clone(), member.clone()).unwrap());
+        relays.push(RelayEngine::new(port, transport, binding.clone(), member.clone()).unwrap());
         children.push(child);
         dirs.push(dir);
     }
@@ -472,6 +576,75 @@ async fn served_dkg(root: &Path, binding: &Binding) -> (Vec<PathBuf>, GroupDescr
     drop(relays); // closes each node's only connection, so `serve` returns
     for child in &mut children { assert!(child.wait().unwrap().success(), "mpc-node serve must exit cleanly"); }
     (dirs, descriptor)
+}
+
+/// INV-13 security-negative (Sprint 1.8B). Through the PRODUCTION
+/// `ConductorBridge`, three real `mpc-node serve` processes complete Round 1
+/// and attestation, observe a complete and internally consistent key roster,
+/// and must then stop: `round_two` refuses because no independently
+/// authorised roster exists. No Round-2 ciphertext may ever be produced or
+/// published, every relay must abort, every node must durably abort on
+/// disconnect, no share may be recoverable, and the node must refuse restart.
+/// The authorised positive path is BLOCKED pending operator approval.
+#[tokio::test]
+async fn served_bridge_refuses_round_two_without_inv13_approval() {
+    let root = tempfile::tempdir().unwrap();
+    let binding = binding();
+    let shared = Arc::new(Mutex::new(Network::default()));
+    let (mut children, mut relays, mut dirs) = (Vec::new(), Vec::new(), Vec::new());
+    for member in &binding.spec.participants {
+        let dir = root.path().join(format!("node-{}", member[0]));
+        let ctx = context(&binding, member);
+        let (bridge, child) = spawn_served(&dir, &ctx,
+            || ConductorBridge::connect(&dir, ctx.clone(), binding.clone()));
+        let transport = Transport { shared: shared.clone(), local: member.clone() };
+        relays.push(RelayEngine::new(bridge, transport, binding.clone(), member.clone()).unwrap());
+        children.push(child);
+        dirs.push(dir);
+    }
+    for relay in &mut relays { relay.start().await.unwrap(); }
+    let mut refusals = vec![None; relays.len()];
+    for _ in 0..20 {
+        for (i, relay) in relays.iter_mut().enumerate() {
+            if refusals[i].is_some() { continue; }
+            assert_ne!(relay.phase(), Phase::Shares, "Round 2 must never be entered");
+            assert_ne!(relay.phase(), Phase::Complete, "DKG must never complete");
+            if let Err(e) = relay.poll_once().await { refusals[i] = Some(e); }
+        }
+        if refusals.iter().all(Option::is_some) { break; }
+    }
+    for (i, refusal) in refusals.iter().enumerate() {
+        let refusal = refusal.as_deref().unwrap_or_else(|| panic!("relay {i} was not refused"));
+        assert!(refusal.starts_with("INV-13: independently authorised Round-2 encryption-key roster unavailable"),
+            "relay {i} must stop at the INV-13 gate, not elsewhere: {refusal}");
+        assert_eq!(relays[i].phase(), Phase::Aborted, "relay {i} must be poisoned");
+        assert!(relays[i].descriptor().is_none());
+    }
+    {
+        let net = shared.lock().unwrap();
+        // The refusal is not caused by an incomplete or forked roster.
+        assert_eq!(net.keys.len(), binding.spec.participants.len());
+        let round_two: usize = net.inbox.values()
+            .map(|slots| slots.envelopes.iter().filter(|env| env.round == 3).count()).sum();
+        assert_eq!(round_two, 0, "no Round-2 ciphertext may exist anywhere");
+        let attestations: usize = net.inbox.values()
+            .map(|slots| slots.envelopes.iter().filter(|env| env.round == 2).count()).sum();
+        assert_eq!(attestations, 6, "the ceremony did reach the Round-2 boundary");
+    }
+    drop(relays); // closes each node's only connection
+    for child in &mut children { child.wait().unwrap(); }
+    let stand_in = GroupDescriptor {
+        proposal_action: binding.proposal_action.clone(), spec: binding.spec.clone(), epoch: 0,
+        dkg_transcript_hash: [1; 32], public_key_package_hash: [2; 32],
+        group_verifying_key: vec![3; 32], encryption_key_binding_actions: vec![vec![4; 39]; 3],
+    };
+    for dir in &dirs {
+        assert!(recover_share(dir, &stand_in).is_err(), "an INV-13-refused node holds no share");
+        let restarted = std::process::Command::new(env!("CARGO_BIN_EXE_mpc-node")).arg("serve").arg(dir)
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().unwrap();
+        assert!(!restarted.status.success(),
+            "a node refused at INV-13 must never resume: {}", String::from_utf8_lossy(&restarted.stderr));
+    }
 }
 
 /// In-memory stand-in for the pinned conductor's authenticated responses.
