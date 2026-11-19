@@ -3,7 +3,9 @@ name: Sprint 1.8B candidate verification
 # Experimental, disposable-only validation on the isolated PR #19 branch.
 on:
   push:
-    branches: [sprint18b/compile-security-verification-20261116]
+    branches:
+      - sprint18b/compile-security-verification-20261116
+      - claude/holochain-threshold-crypto-sprint18b-gocnij
   workflow_dispatch:
 
 permissions:
@@ -32,26 +34,32 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/dkg-sprint18b-native
-          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+          nix develop --no-write-lock-file --command bash -uo pipefail -c '
             export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-sprint18b-native
             git rev-parse HEAD
             rustc --version
             cargo --version
-            cargo check --locked --workspace --all-targets
-            cargo test --locked -p holochain-mpc-dkg-worker --test share_custody
-            cargo test --locked -p holochain-mpc-dkg-worker --lib round_two_uniqueness_tests
-            cargo test --locked -p holochain-mpc-dkg-worker --test round_two_security
-            cargo test --locked -p holochain-mpc-core
-            cargo test --locked -p holochain-mpc-security
-            cargo test --locked -p holochain-mpc-runtime
-            cargo test --locked -p holochain-mpc-frost-ed25519
-            cargo test --locked -p holochain-mpc-dkg-worker
-            cargo test --locked -p holochain-dkg-sdk --all-targets
-            cargo test --locked -p holochain-dkg-sdk --features native-holochain --all-targets
-            cargo check --locked -p holochain-mpc-dkg-worker --all-targets
-            cargo check --locked -p holochain-mpc-dkg-worker --features conductor-client --all-targets
-            cargo check --locked -p holochain-mpc-dkg-worker --features lair-signer --all-targets
-            git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+            # Every gate runs and is recorded; one failure must not hide the
+            # rest as "never reached". The job still fails if any gate fails.
+            failed=()
+            gate() { echo "::group::GATE $*"; if "$@"; then echo "GATE-RESULT PASS: $*"; else echo "GATE-RESULT FAIL($?): $*"; failed+=("$*"); fi; echo "::endgroup::"; }
+            gate cargo check --locked --workspace --all-targets
+            gate cargo test --locked -p holochain-mpc-dkg-worker --test share_custody
+            gate cargo test --locked -p holochain-mpc-dkg-worker --lib round_two_uniqueness_tests
+            gate cargo test --locked -p holochain-mpc-dkg-worker --test round_two_security
+            gate cargo test --locked -p holochain-mpc-core
+            gate cargo test --locked -p holochain-mpc-security
+            gate cargo test --locked -p holochain-mpc-runtime
+            gate cargo test --locked -p holochain-mpc-frost-ed25519
+            gate cargo test --locked -p holochain-mpc-dkg-worker
+            gate cargo test --locked -p holochain-dkg-sdk --all-targets
+            gate cargo test --locked -p holochain-dkg-sdk --features native-holochain --all-targets
+            gate cargo check --locked -p holochain-mpc-dkg-worker --all-targets
+            gate cargo check --locked -p holochain-mpc-dkg-worker --features conductor-client --all-targets
+            gate cargo check --locked -p holochain-mpc-dkg-worker --features lair-signer --all-targets
+            gate git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+            echo "FAILED GATES: ${#failed[@]}"; printf "  %s\n" "${failed[@]}"
+            [ "${#failed[@]}" -eq 0 ]
           '
 
   conductor:
@@ -67,14 +75,23 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/dkg-sprint18b-conductor
-          nix develop --no-write-lock-file --command bash -euo pipefail -c '
+          nix develop --no-write-lock-file --command bash -uo pipefail -c '
             export CARGO_NET_OFFLINE=true TMPDIR=/tmp/dkg-sprint18b-conductor RUST_TEST_THREADS=1
             git rev-parse HEAD
             rustc --version
             cargo --version
             hc --version
-            npm run build:happ
-            npm run test:sweettest
-            cargo test --locked -p mpc --test fable_conductor_adversarial -- --nocapture --test-threads=1
-            git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+            failed=()
+            gate() { echo "::group::GATE $*"; if "$@"; then echo "GATE-RESULT PASS: $*"; else echo "GATE-RESULT FAIL($?): $*"; failed+=("$*"); fi; echo "::endgroup::"; }
+            gate npm run build:happ
+            # Same suites as `npm run test:sweettest`, as separate recorded gates.
+            gate cargo test -p mpc --test mpc_network -- --nocapture
+            gate cargo test -p mpc --test dkg_live -- --nocapture
+            gate cargo test -p mpc --test inbox_hardening -- --nocapture --test-threads=1
+            gate cargo test --locked -p mpc --test fable_conductor_adversarial -- --nocapture --test-threads=1
+            gate cargo test -p holochain-mpc-dkg-worker --test three_processes -- --nocapture
+            gate cargo test -p holochain-mpc-dkg-worker --test conductor_bridge -- --nocapture
+            gate git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
+            echo "FAILED GATES: ${#failed[@]}"; printf "  %s\n" "${failed[@]}"
+            [ "${#failed[@]}" -eq 0 ]
           '
