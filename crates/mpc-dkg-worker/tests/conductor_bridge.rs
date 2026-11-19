@@ -1,10 +1,15 @@
 //! v0.3.9: three separately provisioned Unix node services while conductors
 //! authenticate and store EVERY peer-to-peer DKG envelope. No plaintext shares
 //! or KeyPackages travel through test process / worker IPC.
+//!
+//! Sprint 1.8B: this is an INV-13 security-NEGATIVE live test. It drives the
+//! production `ConductorBridge` over real disposable conductors up to the
+//! Round-2 boundary and requires a fail-closed refusal there. The authorised
+//! positive distributed DKG through this bridge is BLOCKED (operator approval
+//! of the independent key-roster authority is required) and is not claimed.
 use std::path::Path;
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant};
-use std::collections::BTreeSet;
 use hdk::prelude::*;
 use holochain::sweettest::*;
 use holochain_mpc_core::{commitment, Envelope, SessionSpec};
@@ -13,9 +18,8 @@ use holochain_mpc_dkg_worker::node_service::provision;
 use holochain_mpc_dkg_worker::ipc::ChannelContext;
 use rand::{rngs::OsRng, RngCore};
 use holochain_mpc_frost_ed25519 as frost;
-use holochain_mpc_security::activation::GroupActivation;
-use mpc::{DeliveryReceipt, EncryptionKeyRecord, GroupAttestationRecord, PreparedGrant,
-          PublishGroupAttestation, ReceiptStatus, RegisterEncryptionKey, SendMessage, SessionStatus};
+use mpc::{DeliveryReceipt, EncryptionKeyRecord, PreparedGrant,
+          ReceiptStatus, RegisterEncryptionKey, SendMessage, SessionStatus};
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -55,7 +59,7 @@ impl Drop for Worker {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn three_private_node_services_frost_dkg_over_three_conductors() -> TestResult<()> {
+async fn three_private_node_services_stop_at_inv13_round_two_gate_over_three_conductors() -> TestResult<()> {
     let mut conductors = SweetConductorBatch::standard(3).await;
     let dna_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dnas/mpc/workdir/mpc.dna");
     let dna = SweetDnaFile::from_bundle(&dna_path).await?;
@@ -208,50 +212,43 @@ async fn three_private_node_services_frost_dkg_over_three_conductors() -> TestRe
     relay!(attests);
     let unexpected = deliver!(2, |_env: &Envelope| true);
     assert!(unexpected.is_empty());
-    let mut encrypted_round_two = Vec::new();
-    let mut transcript = None;
+    // Sprint 1.8B / INV-13: everything above is real-conductor E5 evidence
+    // (provenance, cap-gated delivery, exact observed key roster). The
+    // observed roster is complete and consistent, yet it is NOT independent
+    // approval, so the production bridge MUST refuse Round 2 for every node
+    // before any secret-bearing ciphertext exists. The authorised positive
+    // E6 path (Round 2, finalize, activation) is BLOCKED pending operator
+    // decisions INV13-A..E in docs/sdk/SPRINT18B_INV13_ADMISSION_DESIGN.md.
     for (i, worker) in workers.iter_mut().enumerate() {
-        let (transcript_hash, outbound) = worker.bridge.round_two(
-            &observed_key_evidence[i], public_keys[i])?;
-        if let Some(hash) = transcript { assert_eq!(hash, transcript_hash); }
-        transcript = Some(transcript_hash);
-        encrypted_round_two.extend(outbound);
-    }
-    assert_eq!(encrypted_round_two.len(), 6);
-    relay!(encrypted_round_two);
-    let unexpected = deliver!(3, |_env: &Envelope| true);
-    assert!(unexpected.is_empty());
-
-    let mut descriptors = Vec::new();
-    for worker in &mut workers {
-        let descriptor = worker.bridge.finalize()?;
-        assert_eq!(descriptor.dkg_transcript_hash, transcript.ok_or("missing transcript")?);
-        descriptors.push(descriptor);
-    }
-    assert!(descriptors.windows(2).all(|pair| pair[0] == pair[1]));
-    let descriptor = &descriptors[0];
-    let digest = descriptor.digest()?;
-    for i in 0..3 {
-        let _: ActionHash = conductors.get(i).unwrap().call(&zomes[i],
-            "publish_group_activation_attestation", PublishGroupAttestation {
-                proposal: proposal.clone(), epoch: descriptor.epoch,
-                descriptor_hash: digest, dkg_transcript_hash: descriptor.dkg_transcript_hash,
-                public_key_package_hash: descriptor.public_key_package_hash,
-            }).await;
+        let refusal = worker.bridge.round_two(&observed_key_evidence[i], public_keys[i])
+            .err().ok_or("live Round 2 must be refused without independent roster approval")?;
+        assert!(refusal.starts_with(
+            "INV-13: independently authorised Round-2 encryption-key roster unavailable"),
+            "node {i} must stop at the INV-13 gate: {refusal}");
     }
     await_consistency(&cells).await?;
-    for observer in 0..3 {
-        let records: Vec<GroupAttestationRecord> = conductors.get(observer).unwrap()
-            .call(&zomes[observer], "get_group_activation_attestations", proposal.clone()).await;
-        assert_eq!(records.len(), 3);
-        let mut activated = GroupActivation::new(descriptor.clone())?;
-        let mut authors = BTreeSet::new();
-        for record in records {
-            assert!(authors.insert(record.author.get_raw_39().to_vec()));
-            assert_eq!(record.attestation.proposal, proposal);
-            activated.attest(record.author.get_raw_39(), record.attestation.descriptor_hash)?;
+    for receiver in 0..3 {
+        let inbox: Vec<Envelope> = conductors.get(receiver).unwrap()
+            .call(&zomes[receiver], "get_inbox", proposal.clone()).await;
+        assert!(inbox.iter().all(|env| env.round < 3),
+            "no Round-2 ciphertext may reach any conductor");
+        assert_eq!(inbox.iter().filter(|env| env.round == 2).count(), 2,
+            "the ceremony did reach the Round-2 boundary");
+    }
+    // Tear down: each node durably aborts on disconnect and never resumes.
+    for (i, worker) in workers.iter_mut().enumerate() {
+        worker.bridge.abort_connection()?;
+        let since = Instant::now();
+        while worker.process.try_wait()?.is_none() {
+            if since.elapsed() > Duration::from_secs(10) {
+                return Err(format!("node {i} did not exit after disconnect").into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(activated.finalize()?.digest(), digest);
+        let restarted = ProcessCommand::new(env!("CARGO_BIN_EXE_mpc-node"))
+            .arg("serve").arg(state_dir.path().join(format!("node-{i}")))
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+        assert!(!restarted.success(), "node {i} refused at INV-13 must never resume");
     }
     // The conductor adapter never receives a native FROST KeyPackage.
     Ok(())

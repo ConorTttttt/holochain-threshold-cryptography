@@ -1,6 +1,16 @@
 //! v0.3.6: three OS processes own FROST secrets while Holochain conductors
 //! authenticate and store EVERY peer-to-peer DKG envelope. No plaintext shares
 //! or KeyPackages travel through test process / worker IPC.
+//!
+//! EVIDENCE CLASSIFICATION (Sprint 1.8B, INV-13): this harness acts as its own
+//! host and sends `Command::BeginRoundTwo` directly to each worker with keys
+//! pinned from the conductors' observed registrations. It does NOT pass
+//! through `ConductorBridge::round_two` and therefore does NOT exercise or
+//! satisfy the INV-13 independent key-roster approval. A PASS here shows FROST
+//! DKG protocol mechanics over real conductor transport with test-host key
+//! pinning only; it is not evidence of an admitted production ceremony and
+//! must not be reported as E6 INV-13-compliant distributed DKG. See finding
+//! S18B-F01 (worker-side admission not enforced) in SPRINT18B_RECOVERY_REPORT.md.
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
