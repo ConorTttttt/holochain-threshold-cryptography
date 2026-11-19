@@ -149,7 +149,7 @@ mod tests {
         use holochain_zome_types::prelude::{ActionHash, AgentPubKey, DnaHash, ExternIO};
         use crate::ipc::ChannelContext;
         use crate::signed_call_policy::MpcCall;
-        #[derive(serde::Serialize)]
+        #[derive(serde::Serialize, Debug)]
         struct LegacyStatus {
             spec: holochain_mpc_core::SessionSpec,
             accepted: Vec<AgentPubKey>,
@@ -176,7 +176,7 @@ mod tests {
         assert!(decode_mpc_response(MpcCall::GetProbeSessionStatus,&pin,legacy).is_err());
         let malformed=ExternIO::encode(serde_json::json!({"ready_observed":true})).unwrap();
         assert!(decode_mpc_response(MpcCall::GetProbeSessionStatus,&pin,malformed).is_err());
-        #[derive(serde::Serialize)]
+        #[derive(serde::Serialize, Debug)]
         struct CurrentStatus {
             spec: holochain_mpc_core::SessionSpec,
             accepted: Vec<AgentPubKey>,

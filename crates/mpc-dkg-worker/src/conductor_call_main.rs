@@ -102,6 +102,17 @@ async fn main() {
         match result {
             MpcZomeResult::ProbeSession { .. } => return Err("probe status requires dedicated probe CLI".into()),
             MpcZomeResult::Inbox(inbox) => println!("PASS: authorised inbox returned {} envelopes", inbox.len()),
+            // Structured slots carry coordinator conflict and quota evidence.
+            // Report all of it, and never print PASS for a contested inbox.
+            MpcZomeResult::InboxSlots(slots) => {
+                let (served, conflicts, withheld) =
+                    (slots.envelopes.len(), slots.conflicts.len(), slots.over_quota.len());
+                if conflicts != 0 || withheld != 0 {
+                    return Err(format!("authorised inbox has {served} served envelopes, \
+                        {conflicts} conflicting slots and {withheld} quota-withheld slots"));
+                }
+                println!("PASS: authorised inbox returned {served} envelopes, no conflicting or withheld slots")
+            }
             MpcZomeResult::EncryptionKeys(keys) => println!("PASS: authorised lookup returned {} key bindings", keys.len()),
             MpcZomeResult::KeyRegistration { .. } => println!("PASS: own encryption key registered"),
             MpcZomeResult::DeliveryReceipt { already_stored, .. } =>

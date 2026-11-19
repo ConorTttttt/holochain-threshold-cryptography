@@ -221,9 +221,16 @@ async fn run() -> Result<(), String> {
             println!("PASS: remote storage acknowledged; already_stored={}; native decryption must be checked separately",receipt.already_stored);
         }
         "receive" => {
-            let inbox = transport.get_inbox().await?;
+            // Structured slots: a conflicting or quota-withheld slot is
+            // coordinator evidence and must not be reduced to a clean list.
+            let slots = transport.get_inbox_slots().await?;
+            if !slots.conflicts.is_empty() || !slots.over_quota.is_empty() {
+                return Err(format!(
+                    "recipient inbox has {} conflicting and {} quota-withheld slots; refusing probe receive",
+                    slots.conflicts.len(), slots.over_quota.len()));
+            }
             let mut found = false;
-            for env in &inbox {
+            for env in &slots.envelopes {
                 let result = endpoint.receive(env)?;
                 found = true;
                 println!("authenticated probe receipt={result:?}");

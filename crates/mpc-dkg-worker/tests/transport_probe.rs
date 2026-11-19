@@ -173,8 +173,12 @@ impl MpcTransport for MockConductor {
     async fn register_key(&mut self, _: [u8; 32]) -> Result<Vec<u8>, String> {
         panic!("probe must not auto-register")
     }
-    async fn get_inbox(&mut self) -> Result<Vec<Envelope>, String> {
-        Ok(self.inbox.clone())
+    // Structured slots carry only what this mock genuinely stores: served
+    // envelopes. It never records conflicts or quota withholding.
+    async fn get_inbox_slots(&mut self)
+        -> Result<holochain_mpc_dkg_worker::inbox_slots::InboxSlots, String> {
+        Ok(holochain_mpc_dkg_worker::inbox_slots::InboxSlots {
+            envelopes: self.inbox.clone(), conflicts: vec![], over_quota: vec![] })
     }
     async fn get_encryption_keys(&mut self) -> Result<Vec<KeyEvidence>, String> {
         Ok(self.plan.approved_keys.clone())
