@@ -51,7 +51,11 @@ jobs:
             gate cargo test --locked -p holochain-mpc-security
             gate cargo test --locked -p holochain-mpc-runtime
             gate cargo test --locked -p holochain-mpc-frost-ed25519
-            gate cargo test --locked -p holochain-mpc-dkg-worker
+            # Conductor-requiring binaries (conductor_bridge, three_processes,
+            # capability_provisioning) need the hApp and run in the conductor job.
+            gate cargo test --locked -p holochain-mpc-dkg-worker --no-fail-fast --lib --bins --test dkg_restart --test input_validation --test ipc_process --test node_service --test relay_simulation --test round_two_security --test share_custody --test signing_session
+            gate cargo test --locked -p holochain-mpc-dkg-worker --features conductor-client --no-fail-fast --lib --bins
+            gate cargo test --locked -p holochain-mpc-dkg-worker --features lair-signer --no-fail-fast --lib --bins --test transport_probe
             gate cargo test --locked -p holochain-dkg-sdk --all-targets
             gate cargo test --locked -p holochain-dkg-sdk --features native-holochain --all-targets
             gate cargo check --locked -p holochain-mpc-dkg-worker --all-targets
@@ -91,6 +95,7 @@ jobs:
             gate cargo test --locked -p mpc --test fable_conductor_adversarial -- --nocapture --test-threads=1
             gate cargo test -p holochain-mpc-dkg-worker --test three_processes -- --nocapture
             gate cargo test -p holochain-mpc-dkg-worker --test conductor_bridge -- --nocapture
+            gate cargo test --locked -p holochain-mpc-dkg-worker --features lair-signer --test capability_provisioning -- --nocapture
             gate git diff --exit-code -- Cargo.lock scripts/release_inventory.json scripts/release_hashes.json
             echo "FAILED GATES: ${#failed[@]}"; printf "  %s\n" "${failed[@]}"
             [ "${#failed[@]}" -eq 0 ]
