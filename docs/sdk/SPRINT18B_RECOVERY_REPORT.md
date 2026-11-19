@@ -89,11 +89,11 @@ Allowed results: PASS / FAIL / BLOCKED / NOT RUN. "Local" means the container to
 | Release-tool unit tests | `2eb1efc` | FAIL | local 21/23; the 2 failures are approved-inventory comparisons | Fails only because of the BLOCKED inventory |
 | `check_release.py` (read-only) | `2eb1efc` | BLOCKED | local exit 1, exactly the 5 known deltas (§5) | Operator approval |
 | Lock/inventory/hash files unchanged | `2eb1efc` | PASS | `git diff --exit-code` vs baseline files | — |
-| Pinned-Nix native job | `2eb1efc` | _CI_ | run 44592669204 | _to be filled from the job log_ |
-| `npm run build:happ` (E4) | `2eb1efc` | _CI_ | run 44592669204 | Hashes not regenerated/approved |
-| `mpc_network`, `dkg_live`, `inbox_hardening`, `fable_conductor_adversarial`, `three_processes` (E5/E7) | `2eb1efc` | _CI_ | run 44592669204 | `dkg_live`/`three_processes` ≠ INV-13 admission |
-| `conductor_bridge` live INV-13 negative (E5) | `2eb1efc` | _CI_ | run 44592669204 | — |
-| `capability_provisioning` Sweettest | `2eb1efc` | _CI_ | run 44592669204 | — |
+| Pinned-Nix native job (all 15 gates: workspace check, share_custody 13/13, round-2 uniqueness 5/5, round_two_security 11/11, core 11, security 27, runtime 28, FROST 16, worker native 108 + 1 ignored, conductor-client 55, lair-signer 108, SDK 6 + 9, 3 feature checks, lock/inventory unchanged) | `8098a20` | PASS | run [44595170065](https://github.com/ConorTttttt/holochain-threshold-cryptography/actions/runs/44595170065), job 135811565500, rustc 1.95.0 pinned, `FAILED GATES: 0`; code tree identical to `2eb1efc` | Ignored S1-M03 test is not a pass |
+| `npm run build:happ` (E4) | `8098a20` | PASS | run [44595170065](https://github.com/ConorTttttt/holochain-threshold-cryptography/actions/runs/44595170065), job 135811564956, `holochain_cli 0.7.1` | Artifact hashes not compared/approved |
+| `mpc_network` 1/1, `dkg_live` 1/1, `inbox_hardening` 7/7, `fable_conductor_adversarial` 5/5, `three_processes` 1/1 (E5/E7) | `8098a20` | PASS | run [44595170065](https://github.com/ConorTttttt/holochain-threshold-cryptography/actions/runs/44595170065), job 135811564956 | `dkg_live`/`three_processes` are test-host pinning, not INV-13 admission; inbox quota write overshoot 2 under burst (S18B-F04) |
+| `conductor_bridge` live INV-13 negative over 3 real conductors (E5) | `8098a20` | PASS | run [44595170065](https://github.com/ConorTttttt/holochain-threshold-cryptography/actions/runs/44595170065), job 135811564956, 1/1 | Positive path BLOCKED |
+| `capability_provisioning` Sweettest (lair-signer) | `8098a20` | PASS | run [44595170065](https://github.com/ConorTttttt/holochain-threshold-cryptography/actions/runs/44595170065), job 135811564956, 1/1 | — |
 | Live distributed DKG via production bridge (E6) | — | BLOCKED | INV-13 gate | INV13-A…E |
 | Live authenticated SDK status read | — | NOT RUN | needs a disposable approved signer, token and SessionSpec | Operator provisioning |
 | Independent FROST + Holochain review (E8) | — | NOT RUN | — | Two specialist reviewers |
@@ -120,6 +120,7 @@ This sprint adds **no** new dependency or lock change: `Cargo.lock`, `release_in
 | **S18B-F01** (new) | HIGH (defence in depth) | worker `Command::BeginRoundTwo` | Secret-owning boundary must enforce admission | Only shipped sender is the gated bridge; IPC key is a private 0600 file | Source review; demonstrated by test hosts (`three_processes`, `DurablePort`, `ChildPort`, `OfflineServedPort`) | Worker-side approval verification + journalled one-shot admission (design §4.2) | **Yes (INV13-B/D)** | OPEN |
 | **S18B-F02** (new) | MED | `mpc-conductor-call`, `mpc-transport-probe` | No silent loss of conflict/quota evidence; builds compile | Fixed `dd7f8bc`: withheld evidence → non-zero exit / refusal | E2 PASS all features; E3 55/55, 108/108 | Live run of the CLIs against a conductor | No | FIXED (E2/E3) |
 | **S18B-F03** (new) | LOW (process) | `sprint18b-verify.yml` | Evidence completeness | Every gate recorded; correct scoping | Workflow diff; CI run | — | No | FIXED |
+| **S18B-F04** (observation) | LOW | Coordinator inbox quota | Served quota never exceeded | Served quota enforced; storage writes may overshoot under concurrent burst | E5 CI: burst of 64 with 8 places left → 10 stored, 54 refused, "write overshoot 2" (test passes) | Bound/document storage overshoot; confirm no served overrun at scale | No | OPEN (observation) |
 | S1-H01 | HIGH | Production custody | Key separate from journal; anti-rollback witness | Dev layout only; root refused; anchor checks | E3: custody tests 13/13 | External witness, UID separation (PR #9 not merged) | **Yes** | OPEN (prod blocker) |
 | S1-M01 | MED | Relay/signing inbox | No silent loss of conflict evidence | Relay aborts before decrypt on conflict | E3: `conflicting_structured_share_slot…` in 108/108; E5 inbox_hardening (CI) | Late conflicts after completion out of scope | No | SOURCE + E3/E5 |
 | S1-M02 | MED | Coordinator v1 envelopes | Cross-app isolation | None in v1; PR #8 v2 design unmerged | — | v2 binding/DNA migration | **Yes** | OPEN |
@@ -141,7 +142,7 @@ This sprint adds **no** new dependency or lock change: `Cargo.lock`, `release_in
 - **Nonce reuse:** the crash-at-every-journal-step test confirms no nonce is reissued and no operation restarts (E3).
 - **Relay conflicts / inbox quotas:** conflicts and quota withholding abort before decrypt (E3). Two shipped CLIs that could have hidden this evidence are now fail-closed (S18B-F02). E5 inbox-hardening is in CI.
 - **Authentication / authorisation:** IPC is HMAC-authenticated and pinned to cell/proposal/session. Signed-call policy tests pass with features. A live SDK signer was NOT RUN.
-- **Adversarial conductor behaviour:** the Fable conductor adversarial suite (5) and inbox hardening (7) passed at baseline; the exact-head results come from CI.
+- **Adversarial conductor behaviour:** the Fable conductor adversarial suite (5) and inbox hardening (7) passed at baseline; both suites passed again at `8098a20` in pinned CI (5/5 and 7/7).
 
 ## 7. Integration preparation
 
@@ -171,11 +172,11 @@ This sprint adds **no** new dependency or lock change: `Cargo.lock`, `release_in
 
 ### 7.4 Recommended next steps
 
-1. Record the exact-head CI results for `2eb1efc` in §4.
+1. Exact-head CI recorded in §4 (run 44595170065, both jobs PASS).
 2. Open a draft PR from this branch to `sprint18b/compile-security-verification-20261116` (or fast-forward PR #19 with approval).
 3. Obtain the INV-13 decisions, then implement the worker-side admission per the design behind a reviewed wire change, with the §7 test list.
 4. Only then attempt E6, followed by E8 review and the inventory approval.
 
 ## 8. Final status
 
-**BLOCKED — OPERATOR APPROVAL REQUIRED.** Every reproducible, safely fixable defect found is fixed and verified natively at `2eb1efc`. The four custody tests, the hidden feature-build compile failures and the gate-masking CI harness are all resolved, and INV-13 remains fail-closed and now has proven negative coverage. Completion is still blocked by decisions that aren't engineering's to make: the INV-13 independent key-roster authority (no E6 is possible without it), the release-inventory approval, and the open production-custody and cross-app findings. No E8 review has been performed.
+**BLOCKED — OPERATOR APPROVAL REQUIRED.** Every reproducible, safely fixable defect found is fixed and verified: locally at `2eb1efc` and in pinned-Nix CI at code-identical `8098a20` (run 44595170065, native 15/15 gates, conductor 9/9 gates). The four custody tests, the hidden feature-build compile failures and the gate-masking CI harness are all resolved, and INV-13 remains fail-closed and now has proven negative coverage. Completion is still blocked by decisions that aren't engineering's to make: the INV-13 independent key-roster authority (no E6 is possible without it), the release-inventory approval, and the open production-custody and cross-app findings. No E8 review has been performed.

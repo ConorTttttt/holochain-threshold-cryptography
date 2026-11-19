@@ -57,3 +57,7 @@ Additional open decisions: signing sequence collisions, finite group lifetime/re
 Review the exact PR #19 diff against `edd7a775...`, run complete E2/E3/E7 with captured command, toolchain, job URL, exit code and counts, and independently inspect source and error-handling semantics. Obtain E4 artifact identities and E5 conductor evidence separately from E6. Perform live read-only SDK acceptance with a disposable authorised signer. Require two specialised reviewers (FROST cryptography and Holochain/conductor identity/capabilities) and human operator signoff for INV-13 and inventory; do not self-award E8.
 
 **Next milestone:** one exact compiled, natively tested and documented Sprint 1.8B SHA with live E5 coordinator negatives, while INV-13 remains safely blocked. Until proven, overall status remains **CHANGES REQUIRED**.
+
+## Sprint 1.8B recovery continuation (2026-11-19)
+
+Continuation branch `claude/holochain-threshold-crypto-sprint18b-gocnij` (from `33db049`, PR #18/#19 history untouched). Code head `2eb1efc` and code-identical `8098a20` were verified in pinned-Nix [run 44595170065](https://github.com/ConorTttttt/holochain-threshold-cryptography/actions/runs/44595170065): native 15/15 gates PASS, conductor 9/9 gates PASS, including the live INV-13 negative over three real conductors. INV-13 remains fail-closed; E6 BLOCKED; E8 NOT RUN; release inventory BLOCKED. See `SPRINT18B_RECOVERY_REPORT.md` and `SPRINT18B_INV13_IMPLEMENTATION_DESIGN.md`.
